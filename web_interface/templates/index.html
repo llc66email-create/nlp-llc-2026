@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Story Weaver - 哈利波特互动叙事系统</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🪄 Story Weaver</h1>
+            <p>AI互动叙事系统 | 哈利波特宇宙</p>
+        </header>
+
+        <main>
+            <!-- 角色选择界面 -->
+            <div id="character-selection-panel" class="character-selection-panel">
+                <div class="character-selection-content">
+                    <h2>选择你的角色</h2>
+                    <p class="subtitle">选择一个角色开始你在霍格沃茨的冒险</p>
+                    <div id="characters-grid" class="characters-grid"></div>
+                </div>
+            </div>
+
+            <!-- 游戏界面 -->
+            <div id="game-interface-panel" class="game-interface" style="display: none;">
+                <!-- 游戏信息面板 -->
+                <div class="info-panel">
+                    <div class="location-display">
+                        <h3>当前位置</h3>
+                        <div id="current-location" class="info-value">加载中...</div>
+                    </div>
+                    <div class="character-display">
+                        <h3>玩家角色</h3>
+                        <div id="player-character" class="info-value">加载中...</div>
+                    </div>
+                    <div class="stats-display">
+                        <h3>交互统计</h3>
+                        <div id="interaction-count" class="stat-item">
+                            <span>轮数:</span>
+                            <span id="count-value">0</span>
+                        </div>
+                        <div id="response-time" class="stat-item">
+                            <span>响应时间:</span>
+                            <span id="time-value">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 叙事显示面板 -->
+                <div class="narrative-panel">
+                    <div class="narrative-header">
+                        <h2>故事进行中...</h2>
+                    </div>
+                    <div id="narrative-display" class="narrative-content">
+                        <p class="placeholder">点击"开始游戏"开始冒险...</p>
+                    </div>
+                    
+                    <!-- 选项面板 -->
+                    <div id="options-panel" class="options-panel" style="display: none;">
+                        <h3>下一步选择</h3>
+                        <div id="options-container" class="options-container"></div>
+                    </div>
+                    
+                    <!-- 系统信息 -->
+                    <div id="system-info" class="system-info" style="display: none;">
+                        <p id="system-message"></p>
+                    </div>
+                </div>
+
+                <!-- 输入面板 -->
+                <div class="input-panel">
+                    <div class="input-group">
+                        <input 
+                            type="text" 
+                            id="user-input" 
+                            placeholder="输入你的行动（如：前往禁林）或直接点击选项..."
+                            autocomplete="off"
+                        >
+                        <button id="submit-btn" onclick="sendInput()">发送</button>
+                    </div>
+                    <div class="button-group">
+                        <button id="change-character-btn" onclick="resetToCharacterSelection()" class="btn-secondary">更换角色</button>
+                        <button id="save-btn" onclick="saveGame()" class="btn-secondary" disabled>保存游戏</button>
+                        <button id="history-btn" onclick="toggleHistory()" class="btn-secondary">查看历史</button>
+                        <button id="end-btn" onclick="endSession()" class="btn-danger" disabled>结束会话</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 历史面板 -->
+            <div id="history-panel" class="history-panel" style="display: none;">
+                <div class="history-header">
+                    <h3>交互历史</h3>
+                    <button onclick="toggleHistory()" class="close-btn">×</button>
+                </div>
+                <div id="history-content" class="history-content"></div>
+            </div>
+
+            <!-- 调试信息 -->
+            <div id="debug-panel" class="debug-panel" style="display: none;">
+                <div class="debug-header">
+                    <h3>调试信息</h3>
+                    <button onclick="toggleDebug()" class="close-btn">×</button>
+                </div>
+                <div id="debug-content" class="debug-content"></div>
+            </div>
+        </main>
+
+        <footer>
+            <p>Story Weaver - 基于RAG的AI互动叙事系统 | 响应时间 &lt; 2秒</p>
+            <button onclick="toggleDebug()" class="debug-toggle">调试</button>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
