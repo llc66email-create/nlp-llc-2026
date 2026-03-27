@@ -48,6 +48,7 @@ function checkSystemInitialization() {
 // 加载可用角色
 function loadCharacters() {
     const grid = document.getElementById('characters-grid');
+    if (!grid) return;
     
     // 显示加载指示
     grid.innerHTML = '<div class="loading-message">⏳ 加载角色中...</div>';
@@ -112,230 +113,152 @@ function selectCharacter(characterName) {
     document.querySelectorAll('.btn-select-character').forEach(btn => {
         btn.disabled = true;
     });
-    displaySystemMessage('⏳ 正在选择角色...');
     
     fetchAPI('/api/select_character', 'POST', { character_name: characterName })
         .then(data => {
-            console.log('角色选择响应:', data);
-            
-            if (data.status === 'error') {
-                // 重新启用按钮
-                document.querySelectorAll('.btn-select-character').forEach(btn => {
-                    btn.disabled = false;
-                });
-                displayError('无法选择角色: ' + (data.message || data.error));
-                return;
+            // 检查是否成功
+            if (data.status !== 'character_selected' || !data.character_info) {
+                throw new Error(data.message || '选择角色失败');
             }
+            
+            const charInfo = data.character_info;
             
             appState.selectedCharacter = characterName;
             appState.playerCharacter = characterName;
-            console.log('角色已选择，当前状态:', appState);
+            appState.currentLocation = charInfo.starting_location;
+            appState.gameActive = true;
+            appState.interactionCount = 0;
             
-            // 隐藏角色选择面板，显示游戏界面
+            // 隐藏角色选择，显示游戏界面
             document.getElementById('character-selection-panel').style.display = 'none';
-            document.getElementById('game-interface-panel').style.display = 'grid';
-            console.log('UI已更新');
+            document.getElementById('game-interface-panel').style.display = 'block';
             
-            // 开始游戏，显示初始场景
-            startGame();
+            // 更新显示信息
+            document.getElementById('current-location').textContent = charInfo.starting_location;
+            document.getElementById('player-character').textContent = characterName;
+            document.getElementById('count-value').textContent = '0';
+            
+            // 启用输入和按钮
+            document.getElementById('user-input').disabled = false;
+            document.getElementById('submit-btn').disabled = false;
+            document.getElementById('change-character-btn').disabled = false;
+            document.getElementById('save-btn').disabled = false;
+            document.getElementById('end-btn').disabled = false;
+            
+            // 显示初始故事
+            displayNarrative(charInfo.description || '你开始在霍格沃茨的冒险...');
+            console.log('✓ 成功选择角色');
         })
         .catch(error => {
-            console.error('选择角色时出错:', error);
+            console.error('选择角色失败: ' + error);
+            displayError('❌ 选择角色失败: ' + error);
             // 重新启用按钮
             document.querySelectorAll('.btn-select-character').forEach(btn => {
                 btn.disabled = false;
             });
-            displayError('无法选择角色: ' + error);
-        });
-}
-
-// 重置到角色选择
-function resetToCharacterSelection() {
-    document.getElementById('character-selection-panel').style.display = 'block';
-    document.getElementById('game-interface-panel').style.display = 'none';
-    appState.gameActive = false;
-    appState.selectedCharacter = null;
-    document.getElementById('narrative-display').innerHTML = '<p class="placeholder">点击"开始游戏"开始冒险...</p>';
-    document.getElementById('options-panel').style.display = 'none';
-}
-
-// 设置事件监听器
-function setupEventListeners() {
-    // 回车键发送
-    document.getElementById('user-input').addEventListener('keypress', function(e) {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            sendInput();
-        }
-    });
-}
-
-// 开始游戏
-function startGame() {
-    if (!appState.selectedCharacter) {
-        displaySystemMessage('请先选择一个角色');
-        return;
-    }
-    
-    console.log('开始新游戏...');
-    fetchAPI('/api/start_game', 'POST', {})
-        .then(data => {
-            appState.gameActive = true;
-            appState.interactionCount = 0;
-            appState.history = [];
-            
-            // 显示初始场景
-            if (data.scene) {
-                const sceneHtml = `
-                    <div class="scene-display">
-                        <h2 class="scene-title">${data.scene.title || '新的冒险开始'}</h2>
-                        <p class="scene-description">${data.scene.scene_description || ''}</p>
-                        <p class="scene-atmosphere"><em>氛围: ${data.scene.atmosphere || ''}</em></p>
-                        <p class="scene-time"><em>时间: ${data.scene.time_of_day || ''}</em></p>
-                        <p class="scene-prompt"><strong>${data.scene.prompt || '现在，你准备做什么？'}</strong></p>
-                    </div>
-                `;
-                displayNarrative(sceneHtml, true);
-            } else {
-                displayNarrative(data.message || '游戏已开始');
-            }
-            
-            updateGameStatus();
-            
-            // 启用输入相关控件
-            document.getElementById('user-input').disabled = false;
-            document.getElementById('submit-btn').disabled = false;
-            document.getElementById('save-btn').disabled = false;
-            document.getElementById('end-btn').disabled = false;
-            
-            console.log('游戏已开始');
-        })
-        .catch(error => {
-            displayError('无法开始游戏: ' + error);
         });
 }
 
 // 发送用户输入
 function sendInput() {
     if (!appState.gameActive) {
-        displayError('请先选择一个角色');
+        displayError('游戏未启动');
         return;
     }
-
+    
     const input = document.getElementById('user-input').value.trim();
-    if (!input) {
-        displayError('请输入你的行动');
-        return;
-    }
-
+    if (!input) return;
+    
+    console.log('用户输入: ' + input);
+    
+    // 添加到历史
+    appState.history.push({ type: 'user', content: input });
+    
+    // 显示用户消息
+    displayNarrative(input, 'user-input');
+    
+    // 清空输入框
+    document.getElementById('user-input').value = '';
+    
     // 禁用输入
     document.getElementById('user-input').disabled = true;
     document.getElementById('submit-btn').disabled = true;
-
-    const startTime = performance.now();
-
-    fetchAPI('/api/process_input', 'POST', { input: input })
+    
+    // 显示处理中
+    const responseTime = document.getElementById('time-value');
+    responseTime.textContent = '处理中...';
+    
+    const startTime = Date.now();
+    
+    // 发送到后端
+    fetchAPI('/api/process_input', 'POST', {
+        input: input
+    })
         .then(data => {
-            const responseTime = (performance.now() - startTime) / 1000;
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            responseTime.textContent = elapsed + 's';
             
-            // 更新调试信息
-            updateDebugInfo({
-                'Intent': data.intent,
-                'Confidence': data.intent_confidence.toFixed(3),
-                'Response Time': responseTime.toFixed(3) + 's',
-                'Consistency': data.consistency_check ? '✓' : '✗'
-            });
-
-            if (data.status === 'success') {
-                // 显示叙述
-                displayNarrative(data.narrative);
-                
-                // 显示选项
-                if (data.next_options && data.next_options.length > 0) {
-                    displayOptions(data.next_options);
-                }
-                
-                // 更新统计信息
-                appState.interactionCount++;
-                updateStats(data.response_time);
-                
-                // 添加到历史
-                appState.history.push({
-                    input: input,
-                    output: data.narrative,
-                    intent: data.intent,
-                    timestamp: new Date().toLocaleTimeString()
-                });
-                
-                // 清空输入
-                document.getElementById('user-input').value = '';
-                
-            } else if (data.status === 'clarification_requested') {
-                displaySystemInfo('系统需要澄清: ' + data.message);
-            } else if (data.status === 'consistency_violation') {
-                displayWarning('一致性检查失败: ' + data.message);
+            // 检查是否成功
+            if (data.status === 'error' || !data.narrative) {
+                throw new Error(data.message || '获取响应失败');
             }
-        })
-        .catch(error => {
-            displayError('处理输入失败: ' + error);
-        })
-        .finally(() => {
+            
+            // 更新游戏状态
+            appState.currentLocation = data.current_location || appState.currentLocation;
+            appState.interactionCount++;
+            
+            // 更新显示
+            document.getElementById('current-location').textContent = appState.currentLocation;
+            document.getElementById('count-value').textContent = appState.interactionCount;
+            
+            // 显示响应
+            displayNarrative(data.narrative);
+            
+            // 添加到历史
+            appState.history.push({ type: 'assistant', content: data.narrative });
+            
+            // 如果有选项，显示选项
+            if (data.next_options && data.next_options.length > 0) {
+                displayOptions(data.next_options);
+            }
+            
             // 重新启用输入
-            if (appState.gameActive) {
-                document.getElementById('user-input').disabled = false;
-                document.getElementById('submit-btn').disabled = false;
-                document.getElementById('user-input').focus();
-            }
-        });
-}
-
-// 保存游戏
-function saveGame() {
-    const saveName = prompt('请输入保存名称:', 'save_' + new Date().getTime());
-    if (!saveName) return;
-
-    fetchAPI('/api/save_game', 'POST', { save_name: saveName })
-        .then(data => {
-            displaySuccess('游戏已保存: ' + saveName);
-            console.log('游戏保存地址:', data.file);
+            document.getElementById('user-input').disabled = false;
+            document.getElementById('submit-btn').disabled = false;
+            document.getElementById('user-input').focus();
+            
+            console.log('✓ 成功获得响应');
         })
         .catch(error => {
-            displayError('保存游戏失败: ' + error);
+            console.error('获取响应失败: ' + error);
+            displayError('❌ 获取响应失败: ' + error);
+            responseTime.textContent = '-';
+            
+            // 重新启用输入
+            document.getElementById('user-input').disabled = false;
+            document.getElementById('submit-btn').disabled = false;
+            document.getElementById('user-input').focus();
         });
 }
 
-// 结束会话
-function endSession() {
-    if (confirm('确定要结束会话吗？')) {
-        fetchAPI('/api/end_session', 'POST', {})
-            .then(data => {
-                displaySuccess('会话已结束');
-                console.log('会话摘要:', data.summary);
-                appState.gameActive = false;
-                
-                // 禁用游戏控件
-                document.getElementById('user-input').disabled = true;
-                document.getElementById('submit-btn').disabled = true;
-                document.getElementById('save-btn').disabled = true;
-                document.getElementById('end-btn').disabled = true;
-            })
-            .catch(error => {
-                displayError('结束会话失败: ' + error);
-            });
+// 显示叙事内容
+function displayNarrative(content, type = 'narrative') {
+    const narrativeDisplay = document.getElementById('narrative-display');
+    
+    const p = document.createElement('p');
+    p.className = `narrative-text ${type}`;
+    p.textContent = content;
+    
+    // 清空占位符
+    const placeholder = narrativeDisplay.querySelector('.placeholder');
+    if (placeholder) {
+        placeholder.remove();
     }
-}
-
-// 显示叙述
-function displayNarrative(text, isHTML = false) {
-    const narrativeDiv = document.getElementById('narrative-display');
-    if (isHTML) {
-        narrativeDiv.innerHTML = text;
-    } else {
-        const paragraph = document.createElement('p');
-        paragraph.textContent = text;
-        narrativeDiv.appendChild(paragraph);
-    }
-    narrativeDiv.scrollTop = narrativeDiv.scrollHeight;
+    
+    narrativeDisplay.appendChild(p);
+    
+    // 滚动到最后
+    narrativeDisplay.scrollTop = narrativeDisplay.scrollHeight;
 }
 
 // 显示选项
@@ -344,189 +267,200 @@ function displayOptions(options) {
     const optionsContainer = document.getElementById('options-container');
     
     optionsContainer.innerHTML = '';
-    options.forEach(option => {
-        const button = document.createElement('button');
-        button.className = 'option-btn';
-        button.textContent = option;
-        button.onclick = function() {
+    
+    for (const option of options) {
+        const btn = document.createElement('button');
+        btn.className = 'option-button';
+        btn.textContent = option;
+        btn.onclick = () => {
             document.getElementById('user-input').value = option;
             sendInput();
         };
-        optionsContainer.appendChild(button);
-    });
+        optionsContainer.appendChild(btn);
+    }
     
     optionsPanel.style.display = 'block';
 }
 
-// 更新游戏状态
-function updateGameStatus() {
-    fetchAPI('/api/game_status', 'GET')
-        .then(data => {
-            document.getElementById('current-location').textContent = data.current_location || '未知';
-            document.getElementById('player-character').textContent = data.player_character || '未知';
-            appState.currentLocation = data.current_location;
-            appState.playerCharacter = data.player_character;
-        })
-        .catch(error => {
-            console.error('获取游戏状态失败:', error);
-        });
-}
-
-// 更新统计信息
-function updateStats(responseTime) {
-    document.getElementById('count-value').textContent = appState.interactionCount;
-    document.getElementById('time-value').textContent = responseTime.toFixed(3) + 's';
-}
-
-// 切换历史面板
-function toggleHistory() {
-    const historyPanel = document.getElementById('history-panel');
-    const historyContent = document.getElementById('history-content');
-    
-    if (historyPanel.style.display === 'none') {
-        historyPanel.style.display = 'block';
-        
-        historyContent.innerHTML = '';
-        appState.history.forEach((item, index) => {
-            const historyItem = document.createElement('div');
-            historyItem.className = 'history-item';
-            historyItem.innerHTML = `
-                <div class="user"><strong>第 ${index + 1} 轮</strong> [${item.intent}]</div>
-                <div style="color: #ddd;">用户: ${escapeHtml(item.input)}</div>
-                <div class="response">系统: ${escapeHtml(item.output.substring(0, 80))}...</div>
-                <div style="color: #666; font-size: 0.8rem; margin-top: 0.5rem;">${item.timestamp}</div>
-            `;
-            historyContent.appendChild(historyItem);
-        });
-    } else {
-        historyPanel.style.display = 'none';
-    }
-}
-
-// 切换调试面板
-function toggleDebug() {
-    const debugPanel = document.getElementById('debug-panel');
-    if (debugPanel.style.display === 'none') {
-        debugPanel.style.display = 'block';
-    } else {
-        debugPanel.style.display = 'none';
-    }
-}
-
-// 更新调试信息
-function updateDebugInfo(info) {
-    const debugContent = document.getElementById('debug-content');
-    const debugItem = document.createElement('div');
-    debugItem.className = 'debug-item';
-    
-    let html = '';
-    for (const [key, value] of Object.entries(info)) {
-        html += `<div><span class="key">${key}:</span> <span class="value">${value}</span></div>`;
-    }
-    
-    debugItem.innerHTML = html;
-    debugContent.insertBefore(debugItem, debugContent.firstChild);
-    
-    // 只保留最近10条
-    while (debugContent.children.length > 10) {
-        debugContent.removeChild(debugContent.lastChild);
-    }
-}
-
-// 显示错误消息
-function displayError(message) {
+// 显示系统消息
+function displaySystemMessage(message) {
     const systemInfo = document.getElementById('system-info');
     const systemMessage = document.getElementById('system-message');
-    systemMessage.innerHTML = '❌ ' + message;
-    systemMessage.style.color = '#ff6b6b';
+    
+    systemMessage.textContent = message;
     systemInfo.style.display = 'block';
+    
+    // 5秒后隐藏
     setTimeout(() => {
         systemInfo.style.display = 'none';
     }, 5000);
 }
 
-// 显示成功消息
-function displaySuccess(message) {
-    const systemInfo = document.getElementById('system-info');
-    const systemMessage = document.getElementById('system-message');
-    systemMessage.innerHTML = '✓ ' + message;
-    systemMessage.style.color = '#4caf50';
-    systemInfo.style.display = 'block';
-    setTimeout(() => {
-        systemInfo.style.display = 'none';
-    }, 4000);
+// 显示错误
+function displayError(message) {
+    displaySystemMessage('❌ 错误: ' + message);
 }
 
-// 显示警告消息
-function displayWarning(message) {
-    const systemInfo = document.getElementById('system-info');
-    const systemMessage = document.getElementById('system-message');
-    systemMessage.innerHTML = '⚠️ ' + message;
-    systemMessage.style.color = '#ff9800';
-    systemInfo.style.display = 'block';
-    setTimeout(() => {
-        systemInfo.style.display = 'none';
-    }, 4000);
+// 重置到角色选择
+function resetToCharacterSelection() {
+    if (!confirm('确定要更换角色吗？当前进度将丢失。')) {
+        return;
+    }
+    
+    appState.gameActive = false;
+    appState.interactionCount = 0;
+    appState.history = [];
+    appState.currentLocation = '';
+    appState.selectedCharacter = null;
+    appState.playerCharacter = '';
+    
+    document.getElementById('game-interface-panel').style.display = 'none';
+    document.getElementById('character-selection-panel').style.display = 'block';
+    
+    // 清空游戏状态
+    document.getElementById('narrative-display').innerHTML = '<p class="placeholder">点击"开始游戏"开始冒险...</p>';
+    document.getElementById('options-panel').style.display = 'none';
+    
+    loadCharacters();
 }
 
-// 显示系统消息
-function displaySystemInfo(message) {
-    const systemInfo = document.getElementById('system-info');
-    const systemMessage = document.getElementById('system-message');
-    systemMessage.innerHTML = 'ℹ️ ' + message;
-    systemMessage.style.color = '#2196f3';
-    systemInfo.style.display = 'block';
+// 保存游戏
+function saveGame() {
+    console.log('保存游戏...');
+    
+    const gameData = {
+        character: appState.selectedCharacter,
+        location: appState.currentLocation,
+        interactionCount: appState.interactionCount,
+        history: appState.history,
+        timestamp: new Date().toISOString()
+    };
+    
+    // 保存到本地存储
+    localStorage.setItem('story-weaver-save', JSON.stringify(gameData));
+    displaySystemMessage('✓ 游戏已保存');
+    
+    // 发送到后端
+    fetchAPI('/api/save_game', 'POST', gameData)
+        .then(data => {
+            console.log('✓ 游戏保存到服务器');
+        })
+        .catch(error => {
+            console.error('保存到服务器失败: ' + error);
+        });
 }
 
-// 显示系统消息（通用）
-function displaySystemMessage(message) {
-    displaySystemInfo(message);
+// 查看历史
+function toggleHistory() {
+    const historyPanel = document.getElementById('history-panel');
+    const historyContent = document.getElementById('history-content');
+    
+    if (historyPanel.style.display === 'none' || !historyPanel.style.display) {
+        // 显示历史
+        historyContent.innerHTML = '';
+        
+        for (const item of appState.history) {
+            const div = document.createElement('div');
+            div.className = `history-item ${item.type}`;
+            div.innerHTML = `<p><strong>${item.type === 'user' ? '你' : '故事'}:</strong> ${item.content}</p>`;
+            historyContent.appendChild(div);
+        }
+        
+        historyPanel.style.display = 'block';
+    } else {
+        // 隐藏历史
+        historyPanel.style.display = 'none';
+    }
 }
 
-// API调用函数
-function fetchAPI(url, method, data) {
+// 结束会话
+function endSession() {
+    if (!confirm('确定要结束会话吗？')) {
+        return;
+    }
+    
+    fetchAPI('/api/end_session', 'POST', {
+        character_name: appState.selectedCharacter,
+        interaction_count: appState.interactionCount
+    })
+        .then(data => {
+            console.log('✓ 会话已结束');
+            displaySystemMessage('✓ 会话已结束。感谢游玩！');
+            
+            resetToCharacterSelection();
+        })
+        .catch(error => {
+            console.error('结束会话失败: ' + error);
+            displayError('结束会话失败');
+        });
+}
+
+// 调试信息
+function toggleDebug() {
+    const debugPanel = document.getElementById('debug-panel');
+    if (debugPanel.style.display === 'none' || !debugPanel.style.display) {
+        debugPanel.style.display = 'block';
+        updateDebugInfo();
+    } else {
+        debugPanel.style.display = 'none';
+    }
+}
+
+function updateDebugInfo() {
+    const debugContent = document.getElementById('debug-content');
+    debugContent.innerHTML = `
+        <p>游戏激活: ${appState.gameActive}</p>
+        <p>系统初始化: ${appState.systemInitialized}</p>
+        <p>当前角色: ${appState.selectedCharacter || '未选择'}</p>
+        <p>当前位置: ${appState.currentLocation || '未知'}</p>
+        <p>交互次数: ${appState.interactionCount}</p>
+        <p>历史记录: ${appState.history.length} 条</p>
+    `;
+}
+
+// 设置事件监听器
+function setupEventListeners() {
+    // 回车发送
+    const userInput = document.getElementById('user-input');
+    if (userInput) {
+        userInput.addEventListener('keypress', function(event) {
+            if (event.key === 'Enter') {
+                sendInput();
+            }
+        });
+    }
+    
+    // 快捷键
+    document.addEventListener('keydown', function(event) {
+        if (event.ctrlKey && event.key === 'h') {
+            event.preventDefault();
+            toggleHistory();
+        }
+        if (event.ctrlKey && event.key === 'd') {
+            event.preventDefault();
+            toggleDebug();
+        }
+    });
+}
+
+// API 调用函数
+function fetchAPI(endpoint, method = 'GET', data = null) {
     const options = {
         method: method,
         headers: {
             'Content-Type': 'application/json'
         }
     };
-
-    if (method === 'POST') {
+    
+    if (data) {
         options.body = JSON.stringify(data);
     }
-
-    return fetch(url, options)
+    
+    return fetch(endpoint, options)
         .then(response => {
-            // 接受 2xx 响应码（200, 201, 202, 204 等）
-            if (response.status >= 200 && response.status < 300) {
-                return response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
             }
-            
-            // 对于错误响应，尝试解析 JSON，否则返回通用错误
-            if (response.status >= 400) {
-                return response.json().then(data => {
-                    throw new Error(data.error || data.message || `HTTP ${response.status}: ${response.statusText}`);
-                }).catch(e => {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                });
-            }
-            
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            return response.json();
         });
 }
-
-// HTML转义函数
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// 页面卸载时保存
-window.addEventListener('beforeunload', function(e) {
-    if (appState.gameActive && appState.interactionCount > 0) {
-        e.preventDefault();
-        e.returnValue = '';
-    }
-});

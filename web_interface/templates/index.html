@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Story Weaver - 哈利波特互动叙事系统</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="container">
@@ -56,13 +57,13 @@
                     <div id="narrative-display" class="narrative-content">
                         <p class="placeholder">点击"开始游戏"开始冒险...</p>
                     </div>
-                    
+
                     <!-- 选项面板 -->
                     <div id="options-panel" class="options-panel" style="display: none;">
                         <h3>下一步选择</h3>
                         <div id="options-container" class="options-container"></div>
                     </div>
-                    
+
                     <!-- 系统信息 -->
                     <div id="system-info" class="system-info" style="display: none;">
                         <p id="system-message"></p>
@@ -72,9 +73,9 @@
                 <!-- 输入面板 -->
                 <div class="input-panel">
                     <div class="input-group">
-                        <input 
-                            type="text" 
-                            id="user-input" 
+                        <input
+                            type="text"
+                            id="user-input"
                             placeholder="输入你的行动（如：前往禁林）或直接点击选项..."
                             autocomplete="off"
                         >
@@ -107,6 +108,11 @@
                 <div id="debug-content" class="debug-content"></div>
             </div>
         </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
 
         <footer>
             <p>Story Weaver - 基于RAG的AI互动叙事系统 | 响应时间 &lt; 2秒</p>

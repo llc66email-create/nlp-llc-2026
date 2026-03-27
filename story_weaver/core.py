@@ -11,7 +11,14 @@ from config import ModelConfig, DataConfig, SystemConfig, StoryConfig
 from story_weaver.state_management.game_state import GameState, Character, Location, Item, PlotNode
 from story_weaver.nlu.intent_extractor import NLUEngine, Intent
 from story_weaver.rag.retriever import RAGRetriever, ContextBuilder
-from story_weaver.nlg.generator import NLGEngine, DialogueGenerator
+# 尝试使用增强型生成器，否则回退到原始
+try:
+    from story_weaver.nlg.enhanced_generator import EnhancedNLGEngine as NLGEngine
+    print("[Core] 使用增强型NLG生成器（支持轻量级中文模型）")
+except ImportError:
+    from story_weaver.nlg.generator import NLGEngine
+    print("[Core] 使用原始NLG生成器")
+from story_weaver.nlg.generator import DialogueGenerator
 from story_weaver.consistency.checker import ConsistencyChecker
 from story_weaver.logging import InteractionLogger
 
@@ -69,12 +76,23 @@ class StoryWeaver:
         print("✓ RAG系统初始化完成")
         
         # 初始化NLG引擎 - 支持轻量级LLM
-        self.nlg_engine = NLGEngine(
-            model_name=ModelConfig.TEXT_GENERATION_MODEL,
-            use_llm=ModelConfig.USE_LLM_GENERATION
-        )
-        self.dialogue_generator = DialogueGenerator()
-        print("✓ NLG引擎初始化完成")
+        # 新的增强型生成器支持 template (高速) 或 distilgpt2 (更灵活)
+        try:
+            self.nlg_engine = NLGEngine(
+                backend="template",  # 使用增强型模板后端（推荐）或"distilgpt2"
+                enable_action_prediction=True,
+                enable_coherence_check=True
+            )
+            print("✓ 增强型NLG引擎初始化完成（后端:template）")
+        except Exception as e:
+            print(f"⚠️ 增强型NLG初始化失败，使用备用方案: {e}")
+            # 备用方案
+            from story_weaver.nlg.generator import NLGEngine as OriginalNLGEngine
+            self.nlg_engine = OriginalNLGEngine(
+                model_name=ModelConfig.TEXT_GENERATION_MODEL,
+                use_llm=ModelConfig.USE_LLM_GENERATION
+            )
+            print("✓ 原始NLG引擎已加载")
         
         self.consistency_checker = ConsistencyChecker(
             rules_path=DataConfig.CONSISTENCY_RULES_PATH
@@ -185,13 +203,46 @@ class StoryWeaver:
             consistency_passed = True
             
             # 6. NLG - 生成叙事响应（基于更新后的状态）
-            nlg_result = self.nlg_engine.generate_narrative(
-                user_input,
-                world_context,
-                [{"content": seg.content, "source": seg.source} for seg in retrieved_segments],
-                intent,
-                []
-            )
+            if isinstance(self.nlg_engine, type(self.nlg_engine)) and hasattr(self.nlg_engine, 'generate_narrative'):
+                # 使用增强型生成器（返回NarrativeResponse对象）
+                try:
+                    nlg_result = self.nlg_engine.generate_narrative(
+                        user_input,
+                        world_context,
+                        [{"content": seg.content, "source": seg.source} for seg in retrieved_segments],
+                        intent
+                    )
+                    # 提取NarrativeResponse的数据
+                    narrative = nlg_result.main_narrative
+                    next_options = nlg_result.next_options if isinstance(nlg_result.next_options, list) else ["继续探索", "观察周围", "尝试其他操作"]
+                    state_updates = nlg_result.state_updates
+                    metadata = nlg_result.metadata
+                except Exception as e:
+                    print(f"[NLG] 增强型生成器出错: {e}，使用备用方案")
+                    nlg_result = self.nlg_engine.generate_narrative(
+                        user_input,
+                        world_context,
+                        [{"content": seg.content, "source": seg.source} for seg in retrieved_segments],
+                        intent,
+                        []
+                    )
+                    narrative = nlg_result.main_narrative
+                    next_options = nlg_result.next_options if hasattr(nlg_result, 'next_options') else ["继续探索", "观察周围", "尝试其他操作"]
+                    state_updates = nlg_result.state_updates if hasattr(nlg_result, 'state_updates') else {}
+                    metadata = nlg_result.metadata if hasattr(nlg_result, 'metadata') else {}
+            else:
+                # 使用原始生成器
+                nlg_result = self.nlg_engine.generate_narrative(
+                    user_input,
+                    world_context,
+                    [{"content": seg.content, "source": seg.source} for seg in retrieved_segments],
+                    intent,
+                    []
+                )
+                narrative = nlg_result.main_narrative
+                next_options = nlg_result.next_options if hasattr(nlg_result, 'next_options') else ["继续探索", "观察周围", "尝试其他操作"]
+                state_updates = nlg_result.state_updates if hasattr(nlg_result, 'state_updates') else {}
+                metadata = nlg_result.metadata if hasattr(nlg_result, 'metadata') else {}
             
             # 7. 记录交互并存入RAG（反馈循环）
             response_time = time.time() - start_time
@@ -221,14 +272,14 @@ class StoryWeaver:
                 "user_input": user_input,
                 "intent": intent,
                 "intent_confidence": confidence,
-                "narrative": nlg_result.main_narrative,
-                "next_options": nlg_result.next_options,
-                "state_updates": nlg_result.state_updates,
+                "narrative": narrative,
+                "next_options": next_options,
+                "state_updates": state_updates,
                 "current_location": self.game_state.current_location,
                 "response_time": response_time,
                 "consistency_check": consistency_passed,
                 "retrieved_context": len(retrieved_segments),  # 显示检索到的上下文数
-                "metadata": nlg_result.metadata  # 添加NLG元数据，显示使用的模型
+                "metadata": metadata  # 显示使用的模型和其他元数据
             }
             
         except Exception as e:
