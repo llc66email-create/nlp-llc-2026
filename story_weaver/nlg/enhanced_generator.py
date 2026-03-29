@@ -226,10 +226,10 @@ class EnhancedTemplateBackend(TextGenerationBackend):
                     "cast": "在严格控制的环境中施放了魔法，"
                 },
                 "consequence": [
-                    "你成为了某些人的目标。",
-                    "信息的力量为你打开了新门。",
+                    "我成为了某些人的目标。",
+                    "信息的力量为我打开了新门。",
                     "政治的天平开始倾斜。",
-                    "你的决定将影响魔法界的未来。"
+                    "我的决定将影响魔法界的未来。"
                 ]
             }
         }
@@ -257,7 +257,7 @@ class EnhancedTemplateBackend(TextGenerationBackend):
         # 组合各部分
         opening = random.choice(templates["opening"]).format(
             intensifier=intensifier,
-            character="you"  # 简化版本
+            character="我"
         )
         
         bridge = templates["action_bridge"].get(action, templates["action_bridge"]["move"])
@@ -267,6 +267,13 @@ class EnhancedTemplateBackend(TextGenerationBackend):
         
         # 组合为完整叙述
         narrative = f"{opening}{bridge}{consequence}"
+        follow_up = random.choice([
+            "随后，更多的情节开始层层展开。",
+            "接着，一种新的危险感在空气中弥漫。",
+            "这一刻，我意识到故事才刚刚开始走向深处。",
+            "很快，一段更复杂的剧情在眼前展开。"
+        ])
+        narrative = f"{narrative} {follow_up}"
         
         return narrative
 
@@ -427,7 +434,7 @@ class EnhancedNLGEngine:
         prompt = f"{character}在{location}。动作：{user_action}。"
         narrative = self.backend.generate(
             prompt,
-            max_length=80,
+            max_length=160,
             context=context,
             temperature=0.75
         )
@@ -449,15 +456,15 @@ class EnhancedNLGEngine:
         """备用叙述生成"""
         
         fallback_templates = {
-            "move": f"{character}在{location}中前进，寻找下一个冒险。",
-            "talk": f"{character}与{location}中的某人进行了有意义的对话。",
-            "take": f"{character}发现了一件有趣的物品，并小心地收了起来。",
-            "observe": f"{character}观察到{location}中隐没的细节，获得了新的洞察。",
-            "cast": f"{character}释放了魔法，{location}中的力量做出了回应。",
-            "examine": f"{character}仔细检查周围，发现了值得注意的东西。"
+            "move": f"我在{location}中前进，寻找下一个冒险。",
+            "talk": f"我与{location}中的某人进行了有意义的对话。",
+            "take": f"我发现了一件有趣的物品，并小心地收了起来。",
+            "observe": f"我观察到{location}中隐没的细节，获得了新的洞察。",
+            "cast": f"我释放了魔法，{location}中的力量做出了回应。",
+            "examine": f"我仔细检查周围，发现了值得注意的东西。"
         }
         
-        return fallback_templates.get(intent, f"{character}在{location}采取了行动。")
+        return fallback_templates.get(intent, f"我在{location}采取了行动。")
     
     def _generate_next_options(self, game_state: Dict, location: str, current_intent: str) -> List[Tuple[str, str]]:
         """生成下一步选项"""

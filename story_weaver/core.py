@@ -11,16 +11,22 @@ from config import ModelConfig, DataConfig, SystemConfig, StoryConfig
 from story_weaver.state_management.game_state import GameState, Character, Location, Item, PlotNode
 from story_weaver.nlu.intent_extractor import NLUEngine, Intent
 from story_weaver.rag.retriever import RAGRetriever, ContextBuilder
-# 尝试使用增强型生成器，否则回退到原始
-try:
-    from story_weaver.nlg.enhanced_generator import EnhancedNLGEngine as NLGEngine
-    print("[Core] 使用增强型NLG生成器（支持轻量级中文模型）")
-except ImportError:
+# OpenAI/DeepSeek API 模式优先；否则尝试增强型生成器
+if ModelConfig.USE_OPENAI_API:
     from story_weaver.nlg.generator import NLGEngine
-    print("[Core] 使用原始NLG生成器")
+    print("[Core] 使用 DeepSeek/OpenAI API NLG生成器")
+else:
+    try:
+        from story_weaver.nlg.enhanced_generator import EnhancedNLGEngine as NLGEngine
+        print("[Core] 使用增强型NLG生成器（支持轻量级中文模型）")
+    except ImportError:
+        from story_weaver.nlg.generator import NLGEngine
+        print("[Core] 使用原始NLG生成器")
 from story_weaver.nlg.generator import DialogueGenerator
 from story_weaver.consistency.checker import ConsistencyChecker
 from story_weaver.logging import InteractionLogger
+from story_weaver.constraint_engine import ConstraintEngine, TimelineBook
+from story_weaver.validation_pipeline import StoryValidationPipeline, StoryProgressTracker
 
 class StoryWeaver:
     """互动叙事系统的主类"""
@@ -75,30 +81,62 @@ class StoryWeaver:
             self.rag_retriever.initialize_from_knowledge_base(DataConfig.KNOWLEDGE_BASE_PATH)
         print("✓ RAG系统初始化完成")
         
-        # 初始化NLG引擎 - 支持轻量级LLM
-        # 新的增强型生成器支持 template (高速) 或 distilgpt2 (更灵活)
-        try:
+        # 初始化NLG引擎 - OpenAI API 和本地模型二选一
+        if ModelConfig.USE_OPENAI_API:
+            from story_weaver.nlg.generator import NLGEngine as OriginalNLGEngine
+            self.nlg_engine = OriginalNLGEngine(
+                model_name=ModelConfig.TEXT_GENERATION_MODEL,
+                use_llm=False,
+                use_openai_api=True,
+                openai_model=ModelConfig.OPENAI_API_MODEL
+            )
+            print(f"✓ OpenAI API NLG引擎初始化完成（模型: {ModelConfig.OPENAI_API_MODEL}）")
+        elif ModelConfig.USE_LLM_GENERATION:
+            if ModelConfig.TEXT_GENERATION_MODEL in ["distilgpt2", "distilgpt2-chinese"]:
+                try:
+                    self.nlg_engine = NLGEngine(
+                        backend="distilgpt2",
+                        enable_action_prediction=True,
+                        enable_coherence_check=True
+                    )
+                    print(f"✓ 增强型NLG引擎初始化完成（后端:distilgpt2）")
+                except Exception as e:
+                    print(f"⚠️ distilgpt2后端加载失败: {e}，回退到原始LLM")
+                    from story_weaver.nlg.generator import NLGEngine as OriginalNLGEngine
+                    self.nlg_engine = OriginalNLGEngine(
+                        model_name=ModelConfig.TEXT_GENERATION_MODEL,
+                        use_llm=True
+                    )
+                    print(f"✓ 原始NLG引擎初始化完成（LLM: {ModelConfig.TEXT_GENERATION_MODEL}）")
+            else:
+                from story_weaver.nlg.generator import NLGEngine as OriginalNLGEngine
+                self.nlg_engine = OriginalNLGEngine(
+                    model_name=ModelConfig.TEXT_GENERATION_MODEL,
+                    use_llm=True
+                )
+                print(f"✓ 原始NLG引擎初始化完成（LLM: {ModelConfig.TEXT_GENERATION_MODEL}）")
+        else:
             self.nlg_engine = NLGEngine(
-                backend="template",  # 使用增强型模板后端（推荐）或"distilgpt2"
+                backend="template",
                 enable_action_prediction=True,
                 enable_coherence_check=True
             )
             print("✓ 增强型NLG引擎初始化完成（后端:template）")
-        except Exception as e:
-            print(f"⚠️ 增强型NLG初始化失败，使用备用方案: {e}")
-            # 备用方案
-            from story_weaver.nlg.generator import NLGEngine as OriginalNLGEngine
-            self.nlg_engine = OriginalNLGEngine(
-                model_name=ModelConfig.TEXT_GENERATION_MODEL,
-                use_llm=ModelConfig.USE_LLM_GENERATION
-            )
-            print("✓ 原始NLG引擎已加载")
+
         
         self.consistency_checker = ConsistencyChecker(
             rules_path=DataConfig.CONSISTENCY_RULES_PATH
         )
         print("✓ 一致性检查器初始化完成")
-        
+
+        # 约束引擎 & 故事推进追踪器
+        self.constraint_engine = ConstraintEngine()
+        self.validation_pipeline = StoryValidationPipeline()
+        self.story_tracker = StoryProgressTracker()
+        # 默认从第一册开始，可通过 select_timeline 修改
+        self.current_book = TimelineBook.BOOK_1
+        print("✓ 约束引擎 & 故事推进追踪器初始化完成")
+
         self.game_state = GameState()
         self._initialize_game_state()
         print("✓ 游戏状态初始化完成")
@@ -192,6 +230,30 @@ class StoryWeaver:
             
             # 3. 获取**更新后的**游戏上下文
             world_context = self.game_state.get_world_context()
+
+            # 3.5 约束引擎 - 对用户输入做预检
+            player_char = self.game_state.player_character or "Harry Potter"
+            current_location = self.game_state.current_location or "Hogwarts Castle"
+            input_valid, input_violations = self.constraint_engine.validate_story_segment(
+                user_input, player_char, current_location, self.current_book
+            )
+            constraint_warning = ""
+            if not input_valid:
+                # 仅记录警告，不阻断流程；违规信息将注入提示词
+                constraint_warning = "；".join(v.reason for v in input_violations)
+                print(f"[Constraint] ⚠️ 输入违规: {constraint_warning}")
+
+            # 生成约束上下文（注入 NLG 提示词）
+            constraint_ctx = self.validation_pipeline.generate_constraint_context(
+                character=player_char,
+                location=current_location,
+                current_book=self.current_book,
+                completed_tasks=self.story_tracker.completed_task_ids,
+            )
+            # 将约束上下文附加到 world_context
+            if isinstance(world_context, dict):
+                world_context["constraint_context"] = constraint_ctx
+                world_context["constraint_warning"] = constraint_warning
             
             # 4. RAG - 检索相关的情节片段（真实检索）
             retrieved_segments = self.rag_retriever.retrieve(
@@ -203,33 +265,18 @@ class StoryWeaver:
             consistency_passed = True
             
             # 6. NLG - 生成叙事响应（基于更新后的状态）
-            if isinstance(self.nlg_engine, type(self.nlg_engine)) and hasattr(self.nlg_engine, 'generate_narrative'):
+            if hasattr(self.nlg_engine, 'action_predictor'):
                 # 使用增强型生成器（返回NarrativeResponse对象）
-                try:
-                    nlg_result = self.nlg_engine.generate_narrative(
-                        user_input,
-                        world_context,
-                        [{"content": seg.content, "source": seg.source} for seg in retrieved_segments],
-                        intent
-                    )
-                    # 提取NarrativeResponse的数据
-                    narrative = nlg_result.main_narrative
-                    next_options = nlg_result.next_options if isinstance(nlg_result.next_options, list) else ["继续探索", "观察周围", "尝试其他操作"]
-                    state_updates = nlg_result.state_updates
-                    metadata = nlg_result.metadata
-                except Exception as e:
-                    print(f"[NLG] 增强型生成器出错: {e}，使用备用方案")
-                    nlg_result = self.nlg_engine.generate_narrative(
-                        user_input,
-                        world_context,
-                        [{"content": seg.content, "source": seg.source} for seg in retrieved_segments],
-                        intent,
-                        []
-                    )
-                    narrative = nlg_result.main_narrative
-                    next_options = nlg_result.next_options if hasattr(nlg_result, 'next_options') else ["继续探索", "观察周围", "尝试其他操作"]
-                    state_updates = nlg_result.state_updates if hasattr(nlg_result, 'state_updates') else {}
-                    metadata = nlg_result.metadata if hasattr(nlg_result, 'metadata') else {}
+                nlg_result = self.nlg_engine.generate_narrative(
+                    user_input,
+                    world_context,
+                    [{"content": seg.content, "source": seg.source} for seg in retrieved_segments],
+                    intent
+                )
+                narrative = nlg_result.main_narrative
+                next_options = nlg_result.next_options if isinstance(nlg_result.next_options, list) else ["继续探索", "观察周围", "尝试其他操作"]
+                state_updates = nlg_result.state_updates
+                metadata = nlg_result.metadata
             else:
                 # 使用原始生成器
                 nlg_result = self.nlg_engine.generate_narrative(
@@ -244,6 +291,22 @@ class StoryWeaver:
                 state_updates = nlg_result.state_updates if hasattr(nlg_result, 'state_updates') else {}
                 metadata = nlg_result.metadata if hasattr(nlg_result, 'metadata') else {}
             
+            # 6.5 约束验证 - 对生成内容做后验
+            _, narrative_valid, narrative_violations = self.validation_pipeline.validate_and_refine(
+                generated_text=narrative,
+                player_character=player_char,
+                location=current_location,
+                current_book=self.current_book,
+            )
+            if not narrative_valid:
+                for v in narrative_violations:
+                    print(f"[Constraint] ⚠️ 输出违规({v.violation_type}): {v.reason}")
+
+            # 6.6 故事推进检查
+            task_completions = self.story_tracker.check_and_update(user_input, narrative)
+            progress_summary = self.story_tracker.get_progress_summary()
+            next_hint = self.story_tracker.get_hint_for_next_task()
+
             # 7. 记录交互并存入RAG（反馈循环）
             response_time = time.time() - start_time
             
@@ -278,8 +341,13 @@ class StoryWeaver:
                 "current_location": self.game_state.current_location,
                 "response_time": response_time,
                 "consistency_check": consistency_passed,
-                "retrieved_context": len(retrieved_segments),  # 显示检索到的上下文数
-                "metadata": metadata  # 显示使用的模型和其他元数据
+                "retrieved_context": len(retrieved_segments),
+                "metadata": metadata,
+                # 约束 & 推进信息
+                "constraint_warning": constraint_warning,
+                "task_completions": task_completions,
+                "story_progress": progress_summary,
+                "next_task_hint": next_hint,
             }
             
         except Exception as e:
@@ -315,6 +383,16 @@ class StoryWeaver:
     def get_available_characters(self) -> Dict[str, Dict[str, Any]]:
         """获取可选角色列表"""
         return self.PLAYABLE_CHARACTERS
+
+    def get_campaign_overview(self, character_name: Optional[str] = None) -> Dict[str, Any]:
+        """获取角色的完整章节和任务设计"""
+        target_character = character_name or self.game_state.player_character or self.story_tracker.character_name
+
+        if target_character not in self.PLAYABLE_CHARACTERS:
+            target_character = self.story_tracker.character_name
+
+        tracker = StoryProgressTracker(target_character)
+        return tracker.get_campaign_overview()
     
     def select_character(self, character_name: str) -> Dict[str, Any]:
         """选择要扮演的角色"""
@@ -327,6 +405,7 @@ class StoryWeaver:
         character_info = self.PLAYABLE_CHARACTERS[character_name]
         self.game_state.player_character = character_name
         self.game_state.current_location = character_info["starting_location"]
+        self.story_tracker.set_character(character_name)
         
         return {
             "status": "character_selected",
@@ -348,6 +427,7 @@ class StoryWeaver:
         character_name = self.game_state.player_character
         location = self.game_state.current_location
         character_info = self.PLAYABLE_CHARACTERS[character_name]
+        self.story_tracker.set_character(character_name)
         
         # 获取当前位置的详细信息
         location_details = self.game_state.get_location_info(location)
@@ -368,19 +448,19 @@ class StoryWeaver:
         """生成初始情景描述"""
         scenes = {
             "Hogwarts Castle": {
-                "description": "你进入了霍格沃茨城堡的中心大厅。\n\n石头走廊里充满了魔法气息，火把的光芒在古老的石墙上摇曳。远处传来学生们的笑声，他们穿梭在众多的人物肖像之间。魔法楼梯在你眼前缓缓移动，通往城堡的各个区域。\n\n你可以看到：\n• 七楼通往各个学院公共休息室\n• 通往霍格沃茨餐厅和图书馆的通道\n• 鹅毛笔商品陈列柜\n• 古老的魔法时钟",
+                "description": "我进入了霍格沃茨城堡的中心大厅。\n\n石头走廊里充满了魔法气息，火把的光芒在古老的石墙上摇曳。远处传来学生们的笑声，他们穿梭在众多的人物肖像之间。魔法楼梯在我眼前缓缓移动，通往城堡的各个区域。\n\n我可以看到：\n• 七楼通往各个学院公共休息室\n• 通往霍格沃茨餐厅和图书馆的通道\n• 鹅毛笔商品陈列柜\n• 古老的魔法时钟",
                 "atmosphere": "神秘而充满魔力",
                 "time_of_day": "傍晚课程刚刚结束"
             },
             "Headmaster\'s Office": {
-                "description": "你坐在邓布利多办公室舒适的办公室里。\n\n这个圆形房间充满了魔法奇观。墙上挂满了历任校长的肖像，他们在画框中沉睡着或窃窃私语。银制仪器嘀嗒嘀嗒地响着，书架上摆满了厚厚的魔法书籍。凤凰福克斯栖息在它的栖木上，发出温柔的叫声。\n\n办公桌上有一个闪闪发光的思想盆。窗外可以看到霍格沃茨的广阔校园和禁林的轮廓。",
+                "description": "我坐在邓布利多办公室舒适的办公室里。\n\n这个圆形房间充满了魔法奇观。墙上挂满了历任校长的肖像，他们在画框中沉睡着或窃窃私语。银制仪器嘀嗒嘀嗒地响着，书架上摆满了厚厚的魔法书籍。凤凰福克斯栖息在它的栖木上，发出温柔的叫声。\n\n办公桌上有一个闪闪发光的思想盆。窗外可以看到霍格沃茨的广阔校园和禁林的轮廓。",
                 "atmosphere": "宁静而充满智慧",
                 "time_of_day": "傍晚"
             }
         }
         
         scene = scenes.get(location, {
-            "description": f"你来到了{location}。这是哈利波特世界中的一个重要地点。",
+            "description": f"我来到了{location}。这是哈利波特世界中的一个重要地点。",
             "atmosphere": "神秘而有趣",
             "time_of_day": "傍晚"
         })
@@ -392,7 +472,7 @@ class StoryWeaver:
             "scene_description": scene["description"],
             "atmosphere": scene["atmosphere"],
             "time_of_day": scene["time_of_day"],
-            "prompt": "现在，你要做什么呢？\n\n(你可以输入任何行动，如：\"前往禁林\"、\"与邓布利多对话\"、\"使用魔法\"等)"
+            "prompt": "现在，我要做什么呢？\n\n(我可以输入任何行动，如：\"前往禁林\"、\"与邓布利多对话\"、\"使用魔法\"等)"
         }
     
     def get_game_status(self) -> Dict[str, Any]:

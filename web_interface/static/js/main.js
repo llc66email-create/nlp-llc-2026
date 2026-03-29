@@ -216,6 +216,28 @@ function sendInput() {
             
             // 添加到历史
             appState.history.push({ type: 'assistant', content: data.narrative });
+
+            // 任务完成通知
+            if (data.task_completions && data.task_completions.length > 0) {
+                data.task_completions.forEach(msg => {
+                    displayNarrative(msg, 'task-complete');
+                });
+            }
+
+            // 下一任务提示
+            if (data.next_task_hint) {
+                displayNarrative(data.next_task_hint, 'task-hint');
+            }
+
+            // 更新进度面板
+            if (data.story_progress) {
+                updateProgressPanel(data.story_progress);
+            }
+
+            // 约束警告（静默记录到控制台，不打扰叙事）
+            if (data.constraint_warning) {
+                console.warn('[约束引擎]', data.constraint_warning);
+            }
             
             // 如果有选项，显示选项
             if (data.next_options && data.next_options.length > 0) {
@@ -393,6 +415,39 @@ function endSession() {
             console.error('结束会话失败: ' + error);
             displayError('结束会话失败');
         });
+}
+
+// 更新故事推进进度面板
+function updateProgressPanel(progress) {
+    let panel = document.getElementById('progress-panel');
+    if (!panel) {
+        // 动态创建进度面板（插入游戏界面侧边）
+        panel = document.createElement('div');
+        panel.id = 'progress-panel';
+        panel.style.cssText = 'position:fixed;top:80px;right:16px;width:220px;background:rgba(20,20,40,0.92);border:1px solid #5c3a8a;border-radius:8px;padding:12px 14px;color:#e8d5b7;font-size:13px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,0.5);';
+        panel.innerHTML = '<div style="font-weight:bold;color:#c9a227;margin-bottom:6px;">📜 故事进度</div><div id="progress-content"></div>';
+        document.body.appendChild(panel);
+    }
+    const content = document.getElementById('progress-content');
+    const recommended = progress.recommended_task || null;
+    const recommendedHtml = recommended
+        ? `<div style="margin-top:8px;color:#a0d0a0;">▶ 当前推荐主线：</div>
+           <div style="margin-top:4px;color:#f5e7c4;font-weight:600;">${recommended.title}</div>
+           <div style="margin-top:3px;line-height:1.4;opacity:0.9;">${recommended.description}</div>`
+        : '<div style="margin-top:8px;color:#a0d0a0;">▶ 当前推荐主线：已全部完成</div>';
+
+    const sideHints = (progress.next_tasks && progress.next_tasks.length > 1)
+        ? `<div style="margin-top:8px;color:#9ab9ff;">可选支线：</div><ul style="margin:4px 0 0 12px;padding:0;">${progress.next_tasks.slice(1).map(t => `<li>${t}</li>`).join('')}</ul>`
+        : '';
+
+    content.innerHTML = `
+        <div>📍 ${progress.current_chapter || '未知章节'}</div>
+        <div style="margin-top:4px;">章节主线：${progress.chapter_main_progress || '-'}</div>
+        <div style="margin-top:4px;">主线：${progress.main_progress}</div>
+        <div>支线：${progress.side_progress}</div>
+        ${recommendedHtml}
+        ${sideHints}
+    `;
 }
 
 // 调试信息

@@ -14,8 +14,10 @@ class ModelConfig:
     ENTITY_MODEL = "dslim/bert-base-multilingual-cased-ner-hrl"
     
     # NLG模型配置 - 动态故事推进
-    TEXT_GENERATION_MODEL = "distilgpt2"  # 轻量级模型，用于约束故事生成
-    
+    TEXT_GENERATION_MODEL = "uer/gpt2-chinese-cluecorpussmall"  # 有效中文轻量GPT2模型
+    USE_OPENAI_API = True  # ✓ 启用 DeepSeek 外部 API 进行故事生成
+    OPENAI_API_MODEL = "deepseek-chat"
+
     # NLG配置
     USE_LLM_GENERATION = True  # ✓ 启用动态LLM生成（带约束）
     # 这个系统会用约束提示词确保故事始终在HP宇宙内

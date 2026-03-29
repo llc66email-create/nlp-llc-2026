@@ -58,12 +58,6 @@
                         <p class="placeholder">点击"开始游戏"开始冒险...</p>
                     </div>
 
-                    <!-- 选项面板 -->
-                    <div id="options-panel" class="options-panel" style="display: none;">
-                        <h3>下一步选择</h3>
-                        <div id="options-container" class="options-container"></div>
-                    </div>
-
                     <!-- 系统信息 -->
                     <div id="system-info" class="system-info" style="display: none;">
                         <p id="system-message"></p>
@@ -88,6 +82,12 @@
                         <button id="end-btn" onclick="endSession()" class="btn-danger" disabled>结束会话</button>
                     </div>
                 </div>
+
+                <!-- 选项面板 -->
+                <div id="options-panel" class="options-panel" style="display: none;">
+                    <h3>下一步选择</h3>
+                    <div id="options-container" class="options-container"></div>
+                </div>
             </div>
 
             <!-- 历史面板 -->
@@ -108,16 +108,6 @@
                 <div id="debug-content" class="debug-content"></div>
             </div>
         </main>
-    </div>
-
-    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
-</body>
-</html>
-
-        <footer>
-            <p>Story Weaver - 基于RAG的AI互动叙事系统 | 响应时间 &lt; 2秒</p>
-            <button onclick="toggleDebug()" class="debug-toggle">调试</button>
-        </footer>
     </div>
 
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>

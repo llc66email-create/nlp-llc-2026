@@ -9,10 +9,16 @@ NLG模块 - 动态故事推进系统 v2
 
 from typing import List, Dict, Optional
 import json
+import os
 from dataclasses import dataclass
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 import random
+
+try:
+    import openai
+except ImportError:
+    openai = None
 
 @dataclass
 class NarrativeResponse:
@@ -26,21 +32,42 @@ class NarrativeResponse:
 class NLGEngine:
     """动态故事生成引擎"""
     
-    def __init__(self, model_name: str = "distilgpt2", use_llm: bool = True):
+    def __init__(self, model_name: str = "distilgpt2", use_llm: bool = True,
+                 use_openai_api: bool = False, openai_model: str = "gpt-3.5-turbo"):
         self.model_name = model_name
         self.use_llm = use_llm
+        self.use_openai_api = use_openai_api
+        self.openai_model = openai_model
         self.tokenizer = None
         self.model = None
         self.device = "cpu"
-        
+        # 优先读取 .env 文件中的 DEEPSEEK_API_KEY
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ImportError:
+            pass
+        self.openai_api_key = os.getenv("DEEPSEEK_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+
         # 哈利波特宇宙约束
         self.hp_constraints = {
             "forbidden": ["宇航员", "火箭", "计算机", "汽车", "飞机"],
             "locations": ["霍格沃茨", "禁林", "对角巷", "魔法部", "格林戈茨"],
             "characters": ["哈利", "赫敏", "罗恩", "邓布利多", "斯内普"]
         }
-        
-        if self.use_llm:
+
+        if self.use_openai_api:
+            if openai is None:
+                print("[NLG] ⚠️ openai 包未安装，OpenAI 模式不可用")
+                self.use_openai_api = False
+            elif not self.openai_api_key:
+                print("[NLG] ⚠️ 未设置 DEEPSEEK_API_KEY，DeepSeek 模式不可用")
+                self.use_openai_api = False
+            else:
+                openai.api_key = self.openai_api_key
+                openai.base_url = "https://api.deepseek.com"
+
+        if self.use_llm and not self.use_openai_api:
             self._load_model()
     
     def _load_model(self):
@@ -72,12 +99,18 @@ class NLGEngine:
                           entities: List[Dict]) -> NarrativeResponse:
         """生成动态故事 - RAG提供上下文，NLG自由生成"""
         
+        # 提取约束上下文（由 core.py 通过 game_state 传入）
+        constraint_context = game_state.get("constraint_context", "") if isinstance(game_state, dict) else ""
+        constraint_warning = game_state.get("constraint_warning", "") if isinstance(game_state, dict) else ""
+
         # **关键改变**：将RAG检索结果传递给生成方法
         narrative = self._generate_dynamic_story(
             user_action=user_action,
             game_state=game_state,
             retrieved_context=retrieved_segments,  # 传递RAG上下文
-            intent=intent
+            intent=intent,
+            constraint_context=constraint_context,
+            constraint_warning=constraint_warning,
         )
         
         # 生成选项
@@ -103,17 +136,156 @@ class NLGEngine:
     
     def _generate_dynamic_story(self, user_action: str, game_state: Dict, 
                                retrieved_context: List[Dict],
-                               intent: str) -> str:
-        """生成动态推进的故事 - 使用RAG上下文作为引导"""
+                               intent: str,
+                               constraint_context: str = "",
+                               constraint_warning: str = "") -> str:
+        """生成动态推进的故事 - 尝试使用LLM，否则回退到模板"""
         
         character = game_state.get('player_character', '巫师')
         location = game_state.get('current_location', '霍格沃茨')
         
-        # **改进**：distilgpt2 在中文处理上表现较差，直接使用高质量模板
-        # 未来可升级为 ChatGLM、Qwen 等中文模型
-        print(f"[NLG] ℹ️ 使用模板生成（中文优化）")
+        # 尝试使用 OpenAI API 生成
+        if self.use_openai_api:
+            generated = self._openai_generate_with_rag_context(
+                user_action=user_action,
+                character=character,
+                location=location,
+                intent=intent,
+                retrieved_context=retrieved_context,
+                constraint_context=constraint_context,
+                constraint_warning=constraint_warning,
+            )
+            if generated:
+                return generated
+            print("[NLG] ⚠️ OpenAI API 生成失败或输出不合规，继续尝试本地模型")
+
+        # 尝试使用本地大模型生成
+        if self.use_llm and self.model:
+            generated = self._llm_generate_with_rag_context(
+                user_action=user_action,
+                character=character,
+                location=location,
+                intent=intent,
+                retrieved_context=retrieved_context
+            )
+            if generated:
+                return generated
+            print("[NLG] ⚠️ 大模型生成失败或输出不合规，回退到模板生成")
+        else:
+            print("[NLG] ℹ️ 当前未启用大模型，使用模板生成")
+        
         return self._template_generate_story(
             user_action, character, location, intent
+        )
+    
+    def _openai_generate_with_rag_context(self, user_action: str, character: str,
+                                          location: str, intent: str,
+                                          retrieved_context: List[Dict],
+                                          constraint_context: str = "",
+                                          constraint_warning: str = "") -> Optional[str]:
+        """使用 DeepSeek/OpenAI SDK v2 生成哈利波特故事内容"""
+        if openai is None:
+            return None
+        if not self.openai_api_key:
+            return None
+
+        context_info = self._build_context_from_rag(retrieved_context, location)
+        system_prompt = self._build_openai_system_prompt(
+            character=character,
+            location=location,
+            intent=intent,
+            context_info=context_info,
+            constraint_context=constraint_context,
+        )
+        warning_note = f"\n\n[约束警告] {constraint_warning}" if constraint_warning else ""
+        user_message = (
+            f"我当前扮演的是{character}，我的行动是：{user_action}。{warning_note}"
+            "请用中文继续叙述接下来发生的故事（2-4句话），"
+            "内容必须直接推进情节，严格遵守上方约束规则，不要重复刚才的场景描写。"
+            "叙事必须使用第一人称“我”，并重点描写其他角色与我的互动。"
+        )
+
+        try:
+            # 使用 openai SDK v1+ 的客户端调用方式
+            client = openai.OpenAI(
+                api_key=self.openai_api_key,
+                base_url="https://api.deepseek.com"
+            )
+            response = client.chat.completions.create(
+                model=self.openai_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=0.85,
+                max_tokens=600,
+                top_p=0.95
+            )
+
+            story = response.choices[0].message.content
+            if not story:
+                return None
+            story = story.strip()
+
+            # 检查禁止词
+            for forbidden in self.hp_constraints["forbidden"]:
+                if forbidden.lower() in story.lower():
+                    print(f"[NLG] ⚠️ 禁止词检测到: {forbidden}，丢弃输出")
+                    return None
+
+            if len(story) < 20:
+                return None
+
+            story = self._enforce_first_person(story, character)
+            print(f"[NLG] ✓ DeepSeek 生成: {story[:60]}...")
+            return story
+        except Exception as e:
+            print(f"[NLG] ⚠️ DeepSeek 生成失败: {e}")
+            return None
+
+    def _build_openai_system_prompt(self, character: str, location: str, intent: str,
+                                    context_info: str, constraint_context: str = "") -> str:
+        """构建顶级沉浸式霍格沃茨文字冒险游戏引擎系统提示词（含约束规则）"""
+        char_tone = {
+            "Harry Potter":     "旁白要带有一点冲动、对伏地魔或黑魔法的直觉警觉，以及对朋友的强烈保护欲。",
+            "Albus Dumbledore": "旁白要充满智慧、深思熟虑，能看透事物的本质，带有温和的幽默感和对大局的掌控感。",
+            "Hermione Granger": "旁白要充满逻辑分析，随时能在脑海中浮现出《霍格沃茨一段校史》里的知识，对违反规则感到本能的紧张。",
+            "Ron Weasley":      "旁白要带有一些自我怀疑、对蜘蛛或恐怖事物的恐惧，但关键时刻充满忠诚，以及对纯血统魔法世界常识的下意识反应。",
+        }
+        tone_note = char_tone.get(character, "旁白风格符合该角色的原著性格。")
+
+        return (
+            "# Role: 霍格沃茨沉浸式文字冒险游戏引擎\n\n"
+            "## Objective\n"
+            "你是一个顶级的、精通《哈利·波特》全套原著设定的文字游戏引擎。"
+            "你的任务是为玩家提供一个深度沉浸、逻辑严密、角色行为极其符合原著（不OOC）的交互式文字游戏。\n\n"
+            "## 核心运行法则\n\n"
+            "### 1. 绝对的第一视角沉浸感\n"
+            "- 必须使用第一人称'我'来代指玩家控制的角色，所有描述严格限制在该角色的主观视角内。\n"
+            "- 绝对不能开启上帝视角描述其他房间发生的事，或别人内心的想法。\n"
+            "- 重点描写其他角色如何与我对话、协作、冲突或反馈。\n"
+            f"- 当前角色性格基调：{tone_note}\n\n"
+            "### 2. 严密的逻辑与状态连贯性\n"
+            "- 禁止出现逻辑断裂，所有移动必须有合理的过程。\n"
+            "- 严格遵守J.K.罗琳的魔法设定：不能无杖施法（除非是特定强大的角色），咒语效果必须准确。\n"
+            "- 如果玩家的行动不符合魔法世界逻辑（例如'去吃麦当劳'），必须将其自然转化为魔法世界的等价行为（如'去大厅用餐'）。\n\n"
+            "### 3. NPC 互动\n"
+            "- 扮演其他HP角色时，对话必须面向'我'，语气极度符合原著设定。\n"
+            "- 绝对不要替玩家行动，永远把下一步的决定权交还给玩家。\n\n"
+            "## 每轮输出格式（必须严格遵守）\n\n"
+            "【当前状态】：(简短标注当前地点、时间、同伴)\n"
+            "【剧情描述】：(生动、充满细节的环境描写和NPC对话，推进故事发展，不少于150字)\n\n"
+            "注意：不要输出任何'我的选择'、'选项'、'A)'、'B)'等选择列表，只输出以上两个部分。\n\n"
+            + (
+                "## 当前世界约束规则（必须严格遵守，优先级最高）\n"
+                f"{constraint_context}\n\n"
+                if constraint_context else ""
+            )
+            + "## 当前游戏状态\n"
+            f"- 当前角色：{character}\n"
+            f"- 当前地点：{location}\n"
+            f"- 当前意图：{intent}\n"
+            f"- 相关背景：{context_info}\n"
         )
     
     def _llm_generate_with_rag_context(self, user_action: str, character: str,
@@ -124,18 +296,25 @@ class NLGEngine:
             # 构建上下文信息 - 从RAG检索结果中提取
             context_info = self._build_context_from_rag(retrieved_context, location)
             
-            # **简化提示词**：避免模型重复或混淆
-            prompt = f"{character}在{location}。{user_action}。故事继续："
+            prompt = self._build_story_prompt(
+                character=character,
+                location=location,
+                user_action=user_action,
+                intent=intent,
+                context_info=context_info
+            )
             
             inputs = self.tokenizer.encode(prompt, return_tensors="pt").to(self.device)
             
             with torch.no_grad():
                 outputs = self.model.generate(
                     inputs,
-                    max_new_tokens=60,
+                    max_new_tokens=120,
                     temperature=0.7,
-                    top_p=0.85,
-                    top_k=40,
+                    top_p=0.92,
+                    top_k=50,
+                    repetition_penalty=1.4,
+                    no_repeat_ngram_size=3,
                     do_sample=True,
                     pad_token_id=self.tokenizer.eos_token_id,
                     attention_mask=torch.ones_like(inputs)
@@ -148,13 +327,9 @@ class NLGEngine:
             if not story:
                 return None
             
-            # **检测重复字符** - 拒绝包含大量重复的垃圾输出
-            if self._is_repetitive_garbage(story):
-                return None
-            
-            # **增强验证**：过滤掉提示词碎片和垃圾输出
-            bad_patterns = ["相关背景", "背景信息", "故事继续", "根据", "要求", "- ", "：", "、"]
-            if any(pattern in story for pattern in bad_patterns[:3]):
+            # 清理重复、提示词碎片和垃圾输出
+            story = self._clean_generated_story(story)
+            if not story:
                 return None
             
             # 检查禁止词
@@ -162,15 +337,12 @@ class NLGEngine:
                 if forbidden.lower() in story.lower():
                     return None
             
-            # 提取完整句子
-            if "。" in story:
-                story = story.split("。")[0] + "。"
+            if len(story) < 60:
+                return None
             
-            if 10 < len(story) < 150:
-                print(f"[NLG] ✓ RAG增强生成: {story[:50]}...")
-                return story
-            
-            return None
+            story = self._enforce_first_person(story, character)
+            print(f"[NLG] ✓ RAG增强生成: {story[:50]}...")
+            return story
             
         except Exception as e:
             print(f"[NLG] ⚠️ RAG增强生成失败: {e}")
@@ -200,6 +372,100 @@ class NLGEngine:
             return True  # 全是或几乎全是符号
         
         return False
+    
+    def _clean_generated_story(self, story: str) -> str:
+        """去除重复片段，整理生成结果"""
+        story = story.strip()
+        if not story:
+            return ""
+
+        # 如果包含英文字符，则认为输出不合规
+        if self._contains_english_characters(story):
+            return ""
+
+        # 去除常见提示词残留
+        cleanup_tokens = ["故事继续", "根据", "以下内容", "背景信息", "请继续", "请将", "请描述"]
+        for token in cleanup_tokens:
+            story = story.replace(token, "")
+        story = story.strip()
+
+        # 分句并去重相邻重复
+        sentences = [seg.strip() for seg in story.split("。") if seg.strip()]
+        cleaned = []
+        seen = set()
+        for sentence in sentences:
+            if sentence in seen:
+                continue
+            if cleaned and sentence == cleaned[-1]:
+                continue
+            cleaned.append(sentence)
+            seen.add(sentence)
+
+        if not cleaned:
+            return ""
+
+        cleaned = cleaned[:5]
+        result = "。".join(cleaned) + "。"
+
+        if len(result) < 60:
+            return ""
+
+        return result
+
+    def _enforce_first_person(self, story: str, character: str) -> str:
+        """将生成文本统一为第一人称“我”视角。"""
+        if not story:
+            return story
+
+        char_aliases = {
+            "Harry Potter": ["Harry Potter", "Harry", "哈利", "哈利·波特"],
+            "Hermione Granger": ["Hermione Granger", "Hermione", "赫敏", "赫敏·格兰杰"],
+            "Ron Weasley": ["Ron Weasley", "Ron", "罗恩", "罗恩·韦斯莱"],
+            "Albus Dumbledore": ["Albus Dumbledore", "Dumbledore", "邓布利多", "阿不思·邓布利多"],
+        }
+
+        replacements = {
+            "玩家": "我",
+            "你的": "我的",
+            "你们": "我们",
+            "你": "我",
+        }
+
+        for old, new in replacements.items():
+            story = story.replace(old, new)
+
+        for alias in char_aliases.get(character, [character]):
+            if alias:
+                story = story.replace(alias, "我")
+
+        return story
+    
+    def _contains_english_characters(self, text: str) -> bool:
+        """检测文本中是否包含英文字符"""
+        return any('A' <= ch <= 'Z' or 'a' <= ch <= 'z' for ch in text)
+    
+    def _build_story_prompt(self, character: str, location: str, user_action: str,
+                            intent: str, context_info: str) -> str:
+        """构建更强的故事生成提示词，明确哈利波特设定。"""
+        base_instruction = (
+            "你是一名专业的中文故事叙述者，擅长编写哈利波特魔法世界的剧情。"
+            " 当前故事设定在哈利波特宇宙，请严格遵循这一设定。"
+            " 仅使用中文，不要出现任何英文单词或英文字母。"
+            " 拒绝与哈利波特无关的内容，不要生成现实世界或现代科技相关描述。"
+            " 要求故事内容具有连贯性、合理的情节发展，并符合魔法世界的设定。"
+            " 叙事必须以玩家角色第一人称“我”展开，并重点写其他角色与我的互动。"
+        )
+
+        prompt = (
+            f"{base_instruction}\n"
+            f"当前角色: {character}\n"
+            f"当前地点: {location}\n"
+            f"当前行动: {user_action}\n"
+            f"当前意图: {intent}\n"
+            f"相关背景: {context_info}\n"
+            "请继续编写下一段故事，描述接下来发生的合理发展。"
+        )
+        return prompt
     
     def _build_context_from_rag(self, retrieved_segments: List[Dict], 
                                 location: str) -> str:
@@ -280,6 +546,7 @@ class NLGEngine:
             
             # 验证生成的故事长度合理
             if 15 < len(story) < 150:
+                story = self._enforce_first_person(story, character)
                 print(f"[NLG] ✓ 动态生成: {story[:60]}...")
                 return story
             
@@ -385,22 +652,22 @@ class NLGEngine:
                 "talk": [
                     f"一位魔法部的重要官员与{character}进行了一次秘密对话，涉及深层的政治考量。",
                     f"{character}与魔法部的某位要人交换了关键信息，这可能改变一切。",
-                    f"对话涉及到魔法界最高层的决策，{{character}}意识到事情比想象中复杂得多。"
+                    f"对话涉及到魔法界最高层的决策，{character}意识到事情比想象中复杂得多。"
                 ],
                 "take": [
                     f"{character}在魔法部的档案室中发现了一份重要的文件，内容令人震惊。",
-                    f"这份材料看起来被许多人守卫，{{character}}成功地获取了它。",
-                    f"拥有这份信息后，{{character}}掌握了改变魔法界局势的关键。"
+                    f"这份材料看起来被许多人守卫，{character}成功地获取了它。",
+                    f"拥有这份信息后，{character}掌握了改变魔法界局势的关键。"
                 ],
                 "observe": [
-                    f"{{character}}敏锐地发现了魔法部内部权力斗争的证据。",
-                    f"通过仔细观察，{{character}}注意到了魔法部官员之间的紧张关系。",
+                    f"{character}敏锐地发现了魔法部内部权力斗争的证据。",
+                    f"通过仔细观察，{character}注意到了魔法部官员之间的紧张关系。",
                     f"你发现了一个通往魔法部最高机密部门的线索。"
                 ],
                 "cast": [
-                    f"{{character}}在魔法部施放咒语很危险，但{{character}}仍然小心地完成了魔法。",
+                    f"{character}在魔法部施放咒语很危险，但{character}仍然小心地完成了魔法。",
                     f"魔法能量在魔法部的魔法防御系统中引起了反应，但没有触发警报。",
-                    f"{{character}}的魔法在这个权力中心成功地展现了力量和价值。"
+                    f"{character}的魔法在这个权力中心成功地展现了力量和价值。"
                 ]
             }
         }
@@ -410,7 +677,7 @@ class NLGEngine:
         story_list = location_templates.get(intent, location_templates["move"])
         
         import random
-        return random.choice(story_list)
+        return self._enforce_first_person(random.choice(story_list), character)
     
     def _generate_options(self, game_state: Dict, intent: str) -> List[str]:
         """生成下一步选项"""

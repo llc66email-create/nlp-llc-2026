@@ -371,6 +371,27 @@ main {
     background: rgba(212, 175, 55, 0.05);
 }
 
+.narrative-text.task-complete {
+    border-left: 3px solid #4caf50;
+    background: rgba(76, 175, 80, 0.08);
+    color: #a5d6a7;
+    font-weight: 600;
+    animation: task-flash 0.5s ease;
+}
+
+.narrative-text.task-hint {
+    border-left: 3px solid #ffa726;
+    background: rgba(255, 167, 38, 0.07);
+    color: #ffcc80;
+    font-style: italic;
+    font-size: 0.9em;
+}
+
+@keyframes task-flash {
+    0% { opacity: 0; transform: translateX(-8px); }
+    100% { opacity: 1; transform: translateX(0); }
+}
+
 .placeholder {
     color: var(--text-secondary);
     font-style: italic;

@@ -135,6 +135,32 @@ def get_characters():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/campaign_overview', methods=['GET'])
+def campaign_overview():
+    """获取角色完整章节与任务配置"""
+    try:
+        is_complete, weaver_instance, error = ensure_initialized()
+
+        if not is_complete:
+            return jsonify({
+                "status": "error",
+                "message": "系统还在初始化中，请稍候再试",
+                "initialized": False
+            }), 202
+
+        if error or not weaver_instance:
+            return jsonify({
+                "status": "error",
+                "message": "系统初始化出错: " + (error or "Unknown error")
+            }), 500
+
+        character_name = request.args.get('character_name', '').strip() or None
+        result = weaver_instance.get_campaign_overview(character_name)
+        return jsonify({"status": "success", "campaign": result}), 200
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/select_character', methods=['POST'])
 def select_character():
     """选择角色"""
