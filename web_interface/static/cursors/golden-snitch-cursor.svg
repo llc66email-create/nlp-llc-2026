@@ -1,0 +1,35 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="aura" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(32 32) rotate(90) scale(26)">
+      <stop offset="0" stop-color="#FFE9A3" stop-opacity="0.95"/>
+      <stop offset="0.45" stop-color="#FFC94D" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#FFC94D" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="body" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(35 30) rotate(130) scale(14)">
+      <stop offset="0" stop-color="#FFF8DA"/>
+      <stop offset="0.35" stop-color="#FFE28A"/>
+      <stop offset="0.72" stop-color="#F7C847"/>
+      <stop offset="1" stop-color="#B77409"/>
+    </radialGradient>
+    <linearGradient id="wing" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFDF6" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#FFE7A3" stop-opacity="0.35"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2.4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <circle cx="32" cy="32" r="24" fill="url(#aura)"/>
+  <path d="M19.5 31.5C10.5 26.5 6.5 19 8.5 15.5C10.5 12 18.5 13.5 25.5 20.5C26.7 21.7 27.8 23.1 28.6 24.4" stroke="#FFF6D2" stroke-opacity="0.8" stroke-width="1.4" stroke-linecap="round"/>
+  <path d="M44.5 27.8C48.5 17.2 56.3 10.6 60 12.4C63.7 14.2 61.8 24.1 54.2 31.1C52.7 32.5 51 33.7 49.3 34.6" stroke="#FFF6D2" stroke-opacity="0.8" stroke-width="1.4" stroke-linecap="round"/>
+  <path d="M18 31.7C9.8 26.2 6.8 19.7 8.7 16.8C10.6 13.9 17.7 15.6 24.1 21.2C25.5 22.4 26.6 23.6 27.5 24.9" fill="url(#wing)" fill-opacity="0.82" stroke="#FFF3CB" stroke-opacity="0.75" stroke-width="1.1" stroke-linejoin="round"/>
+  <path d="M45.4 28.2C49.1 18.5 55.6 12.6 58.8 14.1C62 15.6 60.8 24.4 53.8 30.6C52.4 31.8 50.9 32.9 49.2 33.9" fill="url(#wing)" fill-opacity="0.82" stroke="#FFF3CB" stroke-opacity="0.75" stroke-width="1.1" stroke-linejoin="round"/>
+  <g filter="url(#glow)">
+    <circle cx="32" cy="32" r="7.6" fill="url(#body)"/>
+    <circle cx="29.4" cy="29.6" r="1.8" fill="#FFFDF0" fill-opacity="0.95"/>
+  </g>
+</svg>

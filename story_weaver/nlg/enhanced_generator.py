@@ -127,6 +127,179 @@ class DistilGPT2Backend(TextGenerationBackend):
         return len(symbols_only) < 2
 
 
+class Qwen25LoRABackend(TextGenerationBackend):
+    """Qwen2.5-1.5B-Instruct + LoRA微调后端（支持4-bit量化 & 2秒响应控制）"""
+
+    def __init__(
+        self,
+        lora_path: str,
+        base_model: str = "Qwen/Qwen2.5-1.5B-Instruct",
+        use_4bit: bool = False,
+        fast_max_tokens: int = 60,
+    ):
+        """
+        Args:
+            lora_path:       LoRA适配器目录路径
+            base_model:      基础模型名称或本地路径
+            use_4bit:        是否使用4-bit量化（需bitsandbytes）
+            fast_max_tokens: 首次响应的最大新token数，控制生成时间
+                             T4 float16约40-50 tok/s → 60 tokens ≈ 1.5s
+        """
+        self.model = None
+        self.tokenizer = None
+        self.fast_max_tokens = fast_max_tokens
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        try:
+            from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+            from peft import PeftModel
+
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                lora_path, trust_remote_code=True
+            )
+
+            # 构建量化配置
+            if use_4bit and self.device == "cuda":
+                print("[NLG] 使用4-bit量化加载基础模型（节省显存）...")
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                )
+                base = AutoModelForCausalLM.from_pretrained(
+                    base_model,
+                    quantization_config=bnb_config,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True,
+                )
+            else:
+                dtype = torch.float16 if self.device == "cuda" else torch.float32
+                print(f"[NLG] 加载基础模型: {base_model} (dtype={dtype}) ...")
+                base = AutoModelForCausalLM.from_pretrained(
+                    base_model,
+                    torch_dtype=dtype,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True,
+                )
+                base.to(self.device)
+
+            print(f"[NLG] 加载LoRA适配器: {lora_path} ...")
+            self.model = PeftModel.from_pretrained(base, lora_path)
+            self.model.eval()
+            print(f"[NLG] ✓ Qwen2.5-LoRA后端已加载 | device={self.device} | fast_max_tokens={fast_max_tokens}")
+        except Exception as e:
+            print(f"[NLG] ✗ Qwen2.5-LoRA后端加载失败: {e}")
+            self.model = None
+
+    def generate(self, prompt: str, max_length: int = None, **kwargs) -> Optional[str]:
+        """
+        使用Qwen2.5-LoRA生成文本。
+        max_length 若为 None，则自动使用 fast_max_tokens（约2秒）。
+        """
+        if not self.model:
+            return None
+        max_new_tokens = max_length if max_length is not None else self.fast_max_tokens
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            text = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    temperature=kwargs.get("temperature", 0.8),
+                    top_p=kwargs.get("top_p", 0.9),
+                    do_sample=True,
+                    repetition_penalty=1.1,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+            input_len = inputs["input_ids"].shape[-1]
+            generated_ids = outputs[0][input_len:]
+            result = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+            return result if result else None
+        except Exception as e:
+            print(f"[NLG] Qwen2.5-LoRA生成错误: {e}")
+            return None
+
+
+class ColabRemoteBackend(TextGenerationBackend):
+    """通过 HTTP 调用 Colab 上的 FastAPI 推理服务。
+    支持两个接口：
+      POST /generate    — 快速单次生成（2秒内）
+      POST /two_stage   — 高质量双阶段生成（钩子 + 续写）
+    """
+
+    def __init__(self, base_url: str, timeout_fast: float = 3.5, timeout_slow: float = 30.0):
+        """
+        Args:
+            base_url:     Colab cloudflared 公网地址，如 https://xxx.trycloudflare.com
+            timeout_fast: /generate 接口超时秒数
+            timeout_slow: /two_stage 接口超时秒数
+        """
+        import requests as _req
+        self._requests = _req
+        self.base_url = base_url.rstrip('/')
+        self.timeout_fast = timeout_fast
+        self.timeout_slow = timeout_slow
+        self._available = self._check_health()
+
+    def _check_health(self) -> bool:
+        try:
+            r = self._requests.get(f"{self.base_url}/health", timeout=5)
+            if r.status_code == 200:
+                print(f"[NLG] ✓ Colab 远程模型在线: {self.base_url}")
+                return True
+        except Exception as e:
+            print(f"[NLG] ✗ Colab 远程模型不可达: {e}")
+        return False
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def generate(self, prompt: str, max_length: int = 60, **kwargs) -> Optional[str]:
+        """调用 /generate 接口，适合 2 秒内快速回答场景。"""
+        if not self._available:
+            return None
+        try:
+            resp = self._requests.post(
+                f"{self.base_url}/generate",
+                json={"prompt": prompt, "max_new_tokens": max_length},
+                timeout=self.timeout_fast,
+            )
+            resp.raise_for_status()
+            return resp.json().get("text", "").strip() or None
+        except Exception as e:
+            print(f"[NLG] Colab /generate 调用失败: {e}")
+            return None
+
+    def two_stage_generate(self, prompt: str,
+                           hook_max_tokens: int = 24,
+                           full_max_tokens: int = 220) -> Optional[Dict]:
+        """调用 /two_stage 接口，返回 {'hook': ..., 'full_text': ..., 'hook_latency_sec': ...}。"""
+        if not self._available:
+            return None
+        try:
+            resp = self._requests.post(
+                f"{self.base_url}/two_stage",
+                json={
+                    "prompt": prompt,
+                    "hook_max_tokens": hook_max_tokens,
+                    "full_max_tokens": full_max_tokens,
+                },
+                timeout=self.timeout_slow,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            print(f"[NLG] Colab /two_stage 调用失败: {e}")
+            return None
+
+
 class EnhancedTemplateBackend(TextGenerationBackend):
     """增强型模板后端 - 动态组合模板生成连贯叙述"""
     
@@ -289,7 +462,7 @@ class EnhancedNLGEngine:
         初始化增强型生成引擎
         
         Args:
-            backend: "template"|"distilgpt2"|"auto" (try all)
+            backend: "template"|"distilgpt2"|"qwen25_lora"|"colab_remote"|"auto"
             enable_action_prediction: 是否启用动作预测
             enable_coherence_check: 是否启用连贯性检查
         """
@@ -376,8 +549,62 @@ class EnhancedNLGEngine:
     
     def _init_backend(self, backend: str) -> TextGenerationBackend:
         """初始化文本生成后端"""
-        
-        if backend == "template":
+
+        if backend == "colab_remote":
+            print("[NLG] 尝试使用 Colab 远程后端")
+            try:
+                from config import ModelConfig
+                base_url = getattr(ModelConfig, "COLAB_MODEL_URL", "").strip()
+                timeout_fast = float(getattr(ModelConfig, "COLAB_TIMEOUT_FAST", 3.5))
+                timeout_slow = float(getattr(ModelConfig, "COLAB_TIMEOUT_SLOW", 30.0))
+            except Exception:
+                base_url = ""
+                timeout_fast = 3.5
+                timeout_slow = 30.0
+
+            if not base_url:
+                print("[NLG] COLAB_MODEL_URL 未配置，回退到模板后端")
+                return EnhancedTemplateBackend()
+
+            remote_backend = ColabRemoteBackend(
+                base_url=base_url,
+                timeout_fast=timeout_fast,
+                timeout_slow=timeout_slow,
+            )
+            if remote_backend.available:
+                return remote_backend
+
+            print("[NLG] Colab远程后端不可用，回退到模板后端")
+            return EnhancedTemplateBackend()
+
+        elif backend == "qwen25_lora":
+            print("[NLG] 尝试使用Qwen2.5-LoRA后端")
+            try:
+                from config import ModelConfig
+                lora_path = str(ModelConfig.FINETUNED_MODEL_PATH)
+                base_model = ModelConfig.FINETUNED_BASE_MODEL
+                use_4bit = getattr(ModelConfig, "USE_4BIT_QUANTIZATION", False)
+                fast_max_tokens = getattr(ModelConfig, "FAST_MAX_NEW_TOKENS", 60)
+            except Exception:
+                import os
+                lora_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                    "models", "qwen2_5_1_5b_lora"
+                )
+                base_model = "Qwen/Qwen2.5-1.5B-Instruct"
+                use_4bit = False
+                fast_max_tokens = 60
+            qwen_backend = Qwen25LoRABackend(
+                lora_path, base_model,
+                use_4bit=use_4bit,
+                fast_max_tokens=fast_max_tokens,
+            )
+            if qwen_backend.model:
+                return qwen_backend
+            print("[NLG] Qwen2.5-LoRA加载失败，回退到模板后端")
+            return EnhancedTemplateBackend()
+
+        elif backend == "template":
             print("[NLG] 使用增强型模板后端")
             return EnhancedTemplateBackend()
         
@@ -392,6 +619,28 @@ class EnhancedNLGEngine:
         
         else:  # "auto"
             print("[NLG] 自动选择后端...")
+            try:
+                from config import ModelConfig
+                use_colab_remote = bool(getattr(ModelConfig, "USE_COLAB_REMOTE", False))
+                colab_url = str(getattr(ModelConfig, "COLAB_MODEL_URL", "")).strip()
+                use_finetuned = bool(getattr(ModelConfig, "USE_FINETUNED_MODEL", False))
+            except Exception:
+                use_colab_remote = False
+                colab_url = ""
+                use_finetuned = False
+
+            if use_colab_remote and colab_url:
+                remote_backend = self._init_backend("colab_remote")
+                if not isinstance(remote_backend, EnhancedTemplateBackend):
+                    print("[NLG] ✓ 使用 Colab 远程后端")
+                    return remote_backend
+
+            if use_finetuned:
+                qwen_backend = self._init_backend("qwen25_lora")
+                if not isinstance(qwen_backend, EnhancedTemplateBackend):
+                    print("[NLG] ✓ 使用 Qwen2.5-LoRA 本地后端")
+                    return qwen_backend
+
             try:
                 dgpt2 = DistilGPT2Backend(use_chinese_version=True)
                 if dgpt2.model:
@@ -429,6 +678,19 @@ class EnhancedNLGEngine:
             "character": character,
             "round": round_num
         }
+
+        # 远程后端可选走高质量双阶段接口。
+        if hasattr(self.backend, "two_stage_generate"):
+            try:
+                staged = self.backend.two_stage_generate(
+                    prompt=f"{character}在{location}。动作：{user_action}。",
+                    hook_max_tokens=24,
+                    full_max_tokens=220,
+                )
+                if staged and staged.get("full_text"):
+                    return staged["full_text"].strip()
+            except Exception as e:
+                print(f"[NLG] two_stage调用失败，回退单次生成: {e}")
         
         # 使用后端生成
         prompt = f"{character}在{location}。动作：{user_action}。"

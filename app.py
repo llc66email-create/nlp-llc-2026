@@ -1,7 +1,7 @@
 """
 Story Weaver Web演示界面
 """
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import json
 from pathlib import Path
@@ -18,6 +18,9 @@ logging.getLogger('flask').setLevel(logging.ERROR)
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 app = Flask(__name__, template_folder='web_interface/templates', static_folder='web_interface/static')
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+app.jinja_env.auto_reload = True
 CORS(app)
 
 # 全局Story Weaver实例和初始化状态
@@ -247,6 +250,107 @@ def process_input():
     
     except Exception as e:
         print(f"处理错误: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/process_input_stream', methods=['POST'])
+def process_input_stream():
+    """流式处理用户输入：先给短回应，再给完整结果。"""
+    try:
+        is_complete, weaver_instance, error = ensure_initialized()
+
+        if not is_complete:
+            return jsonify({
+                "status": "error",
+                "message": "系统还在初始化中，请稍候再试",
+                "initialized": False
+            }), 202
+
+        if error or not weaver_instance:
+            return jsonify({
+                "status": "error",
+                "message": "系统初始化出错: " + (error or "Unknown error")
+            }), 500
+
+        data = request.json or {}
+        user_input = data.get('input', '').strip()
+        if not user_input:
+            return jsonify({"error": "Input cannot be empty"}), 400
+
+        def _sse(event_name: str, payload: dict) -> str:
+            return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        @stream_with_context
+        def event_stream():
+            # 告知前端已开始处理
+            yield _sse("status", {"stage": "started"})
+
+            # 先尝试生成一句短回应（不改状态）
+            try:
+                backend = getattr(getattr(weaver_instance, "nlg_engine", None), "backend", None)
+                quick_text = None
+                if backend and hasattr(backend, "generate"):
+                    game_state = getattr(weaver_instance, "game_state", None)
+                    player_character = getattr(game_state, "player_character", None) or "Harry Potter"
+                    current_location = getattr(game_state, "current_location", None) or "Hogwarts Castle"
+
+                    # 用 RAG 提供一小段相关上下文，降低短回复偏离世界观的概率
+                    rag_context = ""
+                    try:
+                        retriever = getattr(weaver_instance, "rag_retriever", None)
+                        if retriever and hasattr(retriever, "retrieve"):
+                            segs = retriever.retrieve(user_input, top_k=2)
+                            ctx_lines = []
+                            for seg in segs:
+                                content = getattr(seg, "content", "")
+                                if content:
+                                    ctx_lines.append(content[:80])
+                            if ctx_lines:
+                                rag_context = " | ".join(ctx_lines)
+                    except Exception:
+                        rag_context = ""
+
+                    quick_prompt = (
+                        "你是哈利波特魔法世界叙事引擎。"
+                        "请仅用中文、第一人称\"我\"输出一句即时叙事。"
+                        "禁止现代世界助手口吻（如预订、客服、系统提示），"
+                        "禁止出现与哈利波特世界无关的现实科技词汇。\n"
+                        f"当前角色：{player_character}\n"
+                        f"当前地点：{current_location}\n"
+                        f"玩家行动：{user_input}\n"
+                        f"相关背景：{rag_context or '无'}\n"
+                        "即时回应（仅一句，不超过30字）："
+                    )
+                    quick_text = backend.generate(quick_prompt, max_length=30)
+
+                    # 轻量后验过滤：若命中现代助手话术，则用规则兜底句
+                    bad_markers = [
+                        "预订", "餐厅", "稍等一下", "我会帮你", "客服", "订单", "app", "AI助手"
+                    ]
+                    if quick_text and any(marker in quick_text for marker in bad_markers):
+                        quick_text = f"我在{current_location}先稳住心神，朝大厅方向快步而去。"
+                if quick_text:
+                    yield _sse("quick", {"text": quick_text})
+            except Exception as e:
+                yield _sse("warn", {"message": f"quick阶段失败: {e}"})
+
+            # 再执行完整主流程（会更新状态）
+            try:
+                result = weaver_instance.process_user_input(user_input)
+                yield _sse("final", result)
+            except Exception as e:
+                yield _sse("error", {"message": str(e)})
+                return
+
+            yield _sse("done", {"ok": True})
+
+        headers = {
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+        return Response(event_stream(), mimetype='text/event-stream', headers=headers)
+    except Exception as e:
+        print(f"流式处理错误: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 

@@ -9,16 +9,107 @@ const appState = {
     playerCharacter: '',
     selectedCharacter: null,
     systemInitialized: false,
-    initializationCheckInterval: null
+    initializationCheckInterval: null,
+    activeModal: null,
+    modalResolver: null
 };
 
 // 初始化
 document.addEventListener('DOMContentLoaded', function() {
     console.log('Story Weaver Web界面已加载');
+    initializeGoldenSnitchCursor();
     setupEventListeners();
     checkSystemInitialization();
     loadCharacters();
 });
+
+function initializeGoldenSnitchCursor() {
+    const cursor = document.getElementById('golden-snitch-cursor');
+
+    if (!cursor) {
+        return;
+    }
+
+    const supportsFinePointer = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+
+    if (!supportsFinePointer) {
+        return;
+    }
+
+    const state = {
+        targetX: window.innerWidth / 2,
+        targetY: window.innerHeight / 2,
+        currentX: window.innerWidth / 2,
+        currentY: window.innerHeight / 2,
+        rafId: null,
+        visible: false
+    };
+
+    function tick() {
+        state.currentX += (state.targetX - state.currentX) * 0.22;
+        state.currentY += (state.targetY - state.currentY) * 0.22;
+        cursor.style.left = `${state.currentX + 12}px`;
+        cursor.style.top = `${state.currentY + 10}px`;
+        state.rafId = window.requestAnimationFrame(tick);
+    }
+
+    function updateCursorMode(target) {
+        const editableTarget = target && target.closest('input, textarea, [contenteditable="true"], select');
+        const hoverTarget = target && target.closest('button, a, .character-card, .option-button, .close-btn, .btn-secondary, .btn-danger, #submit-btn');
+
+        cursor.classList.toggle('is-hidden', Boolean(editableTarget));
+        cursor.classList.toggle('is-hovering', Boolean(hoverTarget) && !editableTarget);
+    }
+
+    document.addEventListener('mousemove', (event) => {
+        state.targetX = event.clientX;
+        state.targetY = event.clientY;
+
+        if (!state.visible) {
+            state.visible = true;
+            cursor.classList.add('is-visible');
+        }
+
+        updateCursorMode(event.target);
+    });
+
+    document.addEventListener('mouseover', (event) => {
+        updateCursorMode(event.target);
+    });
+
+    document.addEventListener('mousedown', (event) => {
+        const pressTarget = event.target && event.target.closest('button, a, .character-card, .option-button, .close-btn, .btn-secondary, .btn-danger, #submit-btn');
+        cursor.classList.toggle('is-pressing', Boolean(pressTarget));
+    });
+
+    document.addEventListener('mouseup', () => {
+        cursor.classList.remove('is-pressing');
+    });
+
+    document.addEventListener('dragend', () => {
+        cursor.classList.remove('is-pressing');
+    });
+
+    document.addEventListener('mouseleave', () => {
+        cursor.classList.remove('is-visible');
+        cursor.classList.remove('is-pressing');
+    });
+
+    window.addEventListener('blur', () => {
+        cursor.classList.remove('is-visible');
+        cursor.classList.remove('is-pressing');
+    });
+
+    window.addEventListener('focus', () => {
+        if (state.visible) {
+            cursor.classList.add('is-visible');
+        }
+    });
+
+    if (!state.rafId) {
+        state.rafId = window.requestAnimationFrame(tick);
+    }
+}
 
 // 检查系统初始化状态
 function checkSystemInitialization() {
@@ -190,77 +281,132 @@ function sendInput() {
     
     const startTime = Date.now();
     
-    // 发送到后端
-    fetchAPI('/api/process_input', 'POST', {
-        input: input
-    })
-        .then(data => {
-            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-            responseTime.textContent = elapsed + 's';
-            
-            // 检查是否成功
-            if (data.status === 'error' || !data.narrative) {
-                throw new Error(data.message || '获取响应失败');
-            }
-            
-            // 更新游戏状态
-            appState.currentLocation = data.current_location || appState.currentLocation;
-            appState.interactionCount++;
-            
-            // 更新显示
-            document.getElementById('current-location').textContent = appState.currentLocation;
-            document.getElementById('count-value').textContent = appState.interactionCount;
-            
-            // 显示响应
-            displayNarrative(data.narrative);
-            
-            // 添加到历史
-            appState.history.push({ type: 'assistant', content: data.narrative });
-
-            // 任务完成通知
-            if (data.task_completions && data.task_completions.length > 0) {
-                data.task_completions.forEach(msg => {
-                    displayNarrative(msg, 'task-complete');
+    streamProcessInput(input, startTime, responseTime)
+        .catch(async (streamError) => {
+            console.warn('流式接口失败，回退普通接口:', streamError);
+            // 回退旧接口，保持兼容
+            return fetchAPI('/api/process_input', 'POST', { input: input })
+                .then(data => {
+                    applyFinalResponse(data, startTime, responseTime);
                 });
-            }
-
-            // 下一任务提示
-            if (data.next_task_hint) {
-                displayNarrative(data.next_task_hint, 'task-hint');
-            }
-
-            // 更新进度面板
-            if (data.story_progress) {
-                updateProgressPanel(data.story_progress);
-            }
-
-            // 约束警告（静默记录到控制台，不打扰叙事）
-            if (data.constraint_warning) {
-                console.warn('[约束引擎]', data.constraint_warning);
-            }
-            
-            // 如果有选项，显示选项
-            if (data.next_options && data.next_options.length > 0) {
-                displayOptions(data.next_options);
-            }
-            
-            // 重新启用输入
-            document.getElementById('user-input').disabled = false;
-            document.getElementById('submit-btn').disabled = false;
-            document.getElementById('user-input').focus();
-            
-            console.log('✓ 成功获得响应');
         })
         .catch(error => {
             console.error('获取响应失败: ' + error);
             displayError('❌ 获取响应失败: ' + error);
             responseTime.textContent = '-';
-            
-            // 重新启用输入
             document.getElementById('user-input').disabled = false;
             document.getElementById('submit-btn').disabled = false;
             document.getElementById('user-input').focus();
         });
+}
+
+async function streamProcessInput(input, startTime, responseTime) {
+    const resp = await fetch('/api/process_input_stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: input })
+    });
+
+    if (!resp.ok || !resp.body) {
+        throw new Error(`流式接口不可用: ${resp.status}`);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split('\n\n');
+        buffer = chunks.pop() || '';
+
+        for (const chunk of chunks) {
+            const evt = parseSSEChunk(chunk);
+            if (!evt) continue;
+
+            if (evt.event === 'quick' && evt.data && evt.data.text) {
+                displayNarrative('⚡ ' + evt.data.text, 'assistant-quick');
+                appState.history.push({ type: 'assistant_quick', content: evt.data.text });
+            }
+
+            if (evt.event === 'final' && evt.data) {
+                applyFinalResponse(evt.data, startTime, responseTime);
+            }
+
+            if (evt.event === 'error') {
+                throw new Error(evt.data?.message || '流式处理失败');
+            }
+        }
+    }
+}
+
+function parseSSEChunk(chunk) {
+    const lines = chunk.split('\n');
+    let event = 'message';
+    let data = '';
+
+    for (const line of lines) {
+        if (line.startsWith('event:')) {
+            event = line.slice(6).trim();
+        } else if (line.startsWith('data:')) {
+            data += line.slice(5).trim();
+        }
+    }
+
+    if (!data) return null;
+    try {
+        return { event, data: JSON.parse(data) };
+    } catch (_) {
+        return { event, data: { text: data } };
+    }
+}
+
+function applyFinalResponse(data, startTime, responseTime) {
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    responseTime.textContent = elapsed + 's';
+
+    if (data.status === 'error' || !data.narrative) {
+        throw new Error(data.message || '获取响应失败');
+    }
+
+    appState.currentLocation = data.current_location || appState.currentLocation;
+    appState.interactionCount++;
+
+    document.getElementById('current-location').textContent = appState.currentLocation;
+    document.getElementById('count-value').textContent = appState.interactionCount;
+
+    displayNarrative(data.narrative, 'assistant-final');
+    appState.history.push({ type: 'assistant', content: data.narrative });
+
+    if (data.task_completions && data.task_completions.length > 0) {
+        data.task_completions.forEach(msg => {
+            displayNarrative(msg, 'task-complete');
+        });
+    }
+
+    if (data.next_task_hint) {
+        displayNarrative(data.next_task_hint, 'task-hint');
+    }
+
+    if (data.story_progress) {
+        updateProgressPanel(data.story_progress);
+    }
+
+    if (data.constraint_warning) {
+        console.warn('[约束引擎]', data.constraint_warning);
+    }
+
+    if (data.next_options && data.next_options.length > 0) {
+        displayOptions(data.next_options);
+    }
+
+    document.getElementById('user-input').disabled = false;
+    document.getElementById('submit-btn').disabled = false;
+    document.getElementById('user-input').focus();
+    console.log('✓ 成功获得响应');
 }
 
 // 显示叙事内容
@@ -323,27 +469,180 @@ function displayError(message) {
     displaySystemMessage('❌ 错误: ' + message);
 }
 
-// 重置到角色选择
-function resetToCharacterSelection() {
-    if (!confirm('确定要更换角色吗？当前进度将丢失。')) {
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function openMagicModal({ title, kicker = '霍格沃茨档案室', bodyHTML = '', actions = [], modalType = 'default' }) {
+    const modal = document.getElementById('magic-modal');
+    const titleElement = document.getElementById('magic-modal-title');
+    const kickerElement = document.getElementById('magic-modal-kicker');
+    const bodyElement = document.getElementById('magic-modal-body');
+    const actionsElement = document.getElementById('magic-modal-actions');
+
+    if (!modal || !titleElement || !kickerElement || !bodyElement || !actionsElement) {
         return;
     }
-    
+
+    titleElement.textContent = title;
+    kickerElement.textContent = kicker;
+    bodyElement.innerHTML = bodyHTML;
+    actionsElement.innerHTML = '';
+
+    actions.forEach((action) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `magic-action-btn ${action.variant || 'secondary'}`;
+        button.textContent = action.label;
+        button.addEventListener('click', () => {
+            if (typeof action.onClick === 'function') {
+                action.onClick();
+            }
+        });
+        actionsElement.appendChild(button);
+    });
+
+    modal.classList.add('is-open');
+    modal.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('modal-open');
+    appState.activeModal = modalType;
+}
+
+function closeMagicModal(result = null) {
+    const modal = document.getElementById('magic-modal');
+
+    if (!modal) {
+        return;
+    }
+
+    modal.classList.remove('is-open');
+    modal.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('modal-open');
+    appState.activeModal = null;
+
+    if (typeof appState.modalResolver === 'function') {
+        const resolver = appState.modalResolver;
+        appState.modalResolver = null;
+        resolver(result);
+    }
+}
+
+function showConfirmModal({ title, message, confirmLabel, cancelLabel = '返回', confirmVariant = 'primary', kicker = '魔法抉择' }) {
+    return new Promise((resolve) => {
+        appState.modalResolver = resolve;
+
+        openMagicModal({
+            title,
+            kicker,
+            modalType: 'confirm',
+            bodyHTML: `<p>${escapeHtml(message)}</p>`,
+            actions: [
+                {
+                    label: cancelLabel,
+                    variant: 'secondary',
+                    onClick: () => closeMagicModal(false)
+                },
+                {
+                    label: confirmLabel,
+                    variant: confirmVariant,
+                    onClick: () => closeMagicModal(true)
+                }
+            ]
+        });
+    });
+}
+
+function showNoticeModal({ title, message, kicker = '魔法回执', summary = [] }) {
+    const summaryHtml = summary.length
+        ? `<div class="modal-summary-grid">${summary.map((item) => `
+            <div class="modal-summary-card">
+                <span>${escapeHtml(item.label)}</span>
+                <strong>${escapeHtml(item.value)}</strong>
+            </div>
+        `).join('')}</div>`
+        : '';
+
+    openMagicModal({
+        title,
+        kicker,
+        modalType: 'notice',
+        bodyHTML: `<p>${escapeHtml(message)}</p>${summaryHtml}`,
+        actions: [
+            {
+                label: '继续冒险',
+                variant: 'primary',
+                onClick: () => closeMagicModal()
+            }
+        ]
+    });
+}
+
+function renderHistoryModal() {
+    const historyHtml = appState.history.length
+        ? `<div class="history-log-list">${appState.history.map((item) => `
+            <div class="history-item ${escapeHtml(item.type)}">
+                <strong>${item.type === 'user' ? '你的行动' : item.type === 'assistant_quick' ? '飞贼低语' : '故事回响'}</strong>
+                <p>${escapeHtml(item.content)}</p>
+            </div>
+        `).join('')}</div>`
+        : '<div class="history-empty">羽毛笔还没有记录下新的冒险。</div>';
+
+    openMagicModal({
+        title: '交互历史',
+        kicker: '霍格沃茨档案室',
+        modalType: 'history',
+        bodyHTML: historyHtml,
+        actions: [
+            {
+                label: '合上卷轴',
+                variant: 'primary',
+                onClick: () => closeMagicModal()
+            }
+        ]
+    });
+}
+
+function performResetToCharacterSelection() {
     appState.gameActive = false;
     appState.interactionCount = 0;
     appState.history = [];
     appState.currentLocation = '';
     appState.selectedCharacter = null;
     appState.playerCharacter = '';
-    
+
     document.getElementById('game-interface-panel').style.display = 'none';
     document.getElementById('character-selection-panel').style.display = 'block';
-    
-    // 清空游戏状态
     document.getElementById('narrative-display').innerHTML = '<p class="placeholder">点击"开始游戏"开始冒险...</p>';
     document.getElementById('options-panel').style.display = 'none';
-    
+
+    const progressPanel = document.getElementById('progress-panel');
+    if (progressPanel) {
+        progressPanel.remove();
+    }
+
     loadCharacters();
+}
+
+// 重置到角色选择
+async function resetToCharacterSelection() {
+    const confirmed = await showConfirmModal({
+        title: '更换角色',
+        kicker: '分院与抉择',
+        message: '更换角色后，当前旅程记录会被清空。要重新踏上另一位巫师的冒险吗？',
+        confirmLabel: '更换角色',
+        cancelLabel: '继续当前旅程'
+    });
+
+    if (!confirmed) {
+        return;
+    }
+
+    performResetToCharacterSelection();
 }
 
 // 保存游戏
@@ -360,44 +659,51 @@ function saveGame() {
     
     // 保存到本地存储
     localStorage.setItem('story-weaver-save', JSON.stringify(gameData));
-    displaySystemMessage('✓ 游戏已保存');
     
     // 发送到后端
     fetchAPI('/api/save_game', 'POST', gameData)
-        .then(data => {
+        .then(() => {
             console.log('✓ 游戏保存到服务器');
+            showNoticeModal({
+                title: '游戏已存档',
+                kicker: '记忆冥想盆',
+                message: '你的冒险已经被封存进魔法档案，随时都可以继续这段旅程。',
+                summary: [
+                    { label: '角色', value: appState.selectedCharacter || '未选择' },
+                    { label: '当前位置', value: appState.currentLocation || '未知' },
+                    { label: '记录轮数', value: String(appState.interactionCount) },
+                    { label: '保存时间', value: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }
+                ]
+            });
         })
         .catch(error => {
             console.error('保存到服务器失败: ' + error);
+            displayError('保存到服务器失败');
         });
 }
 
 // 查看历史
 function toggleHistory() {
-    const historyPanel = document.getElementById('history-panel');
-    const historyContent = document.getElementById('history-content');
-    
-    if (historyPanel.style.display === 'none' || !historyPanel.style.display) {
-        // 显示历史
-        historyContent.innerHTML = '';
-        
-        for (const item of appState.history) {
-            const div = document.createElement('div');
-            div.className = `history-item ${item.type}`;
-            div.innerHTML = `<p><strong>${item.type === 'user' ? '你' : '故事'}:</strong> ${item.content}</p>`;
-            historyContent.appendChild(div);
-        }
-        
-        historyPanel.style.display = 'block';
-    } else {
-        // 隐藏历史
-        historyPanel.style.display = 'none';
+    if (appState.activeModal === 'history') {
+        closeMagicModal();
+        return;
     }
+
+    renderHistoryModal();
 }
 
 // 结束会话
-function endSession() {
-    if (!confirm('确定要结束会话吗？')) {
+async function endSession() {
+    const confirmed = await showConfirmModal({
+        title: '结束会话',
+        kicker: '城堡宵禁',
+        message: '这会结束当前对话并返回角色选择界面。要把这段冒险先收进羊皮卷吗？',
+        confirmLabel: '结束会话',
+        cancelLabel: '继续冒险',
+        confirmVariant: 'danger'
+    });
+
+    if (!confirmed) {
         return;
     }
     
@@ -405,11 +711,18 @@ function endSession() {
         character_name: appState.selectedCharacter,
         interaction_count: appState.interactionCount
     })
-        .then(data => {
+        .then(() => {
             console.log('✓ 会话已结束');
-            displaySystemMessage('✓ 会话已结束。感谢游玩！');
-            
-            resetToCharacterSelection();
+            showNoticeModal({
+                title: '会话已结束',
+                kicker: '羊皮卷归档',
+                message: '今晚的冒险已经合卷。下次回到霍格沃茨时，你仍可以重新展开新的故事。',
+                summary: [
+                    { label: '角色', value: appState.selectedCharacter || '未选择' },
+                    { label: '完成轮数', value: String(appState.interactionCount) }
+                ]
+            });
+            performResetToCharacterSelection();
         })
         .catch(error => {
             console.error('结束会话失败: ' + error);
@@ -475,6 +788,9 @@ function updateDebugInfo() {
 
 // 设置事件监听器
 function setupEventListeners() {
+    const modal = document.getElementById('magic-modal');
+    const modalCloseButton = document.getElementById('magic-modal-close');
+
     // 回车发送
     const userInput = document.getElementById('user-input');
     if (userInput) {
@@ -495,7 +811,25 @@ function setupEventListeners() {
             event.preventDefault();
             toggleDebug();
         }
+        if (event.key === 'Escape' && appState.activeModal) {
+            event.preventDefault();
+            closeMagicModal(false);
+        }
     });
+
+    if (modal) {
+        modal.addEventListener('click', function(event) {
+            if (event.target.dataset.modalClose === 'true') {
+                closeMagicModal(false);
+            }
+        });
+    }
+
+    if (modalCloseButton) {
+        modalCloseButton.addEventListener('click', function() {
+            closeMagicModal(false);
+        });
+    }
 }
 
 // API 调用函数

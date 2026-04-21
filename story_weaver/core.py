@@ -92,7 +92,37 @@ class StoryWeaver:
             )
             print(f"✓ OpenAI API NLG引擎初始化完成（模型: {ModelConfig.OPENAI_API_MODEL}）")
         elif ModelConfig.USE_LLM_GENERATION:
-            if ModelConfig.TEXT_GENERATION_MODEL in ["distilgpt2", "distilgpt2-chinese"]:
+            if getattr(ModelConfig, "USE_COLAB_REMOTE", False):
+                try:
+                    self.nlg_engine = NLGEngine(
+                        backend="colab_remote",
+                        enable_action_prediction=True,
+                        enable_coherence_check=True
+                    )
+                    print("✓ 增强型NLG引擎初始化完成（后端:colab_remote）")
+                except Exception as e:
+                    print(f"⚠️ colab_remote后端加载失败: {e}，回退到template")
+                    self.nlg_engine = NLGEngine(
+                        backend="template",
+                        enable_action_prediction=True,
+                        enable_coherence_check=True
+                    )
+            elif getattr(ModelConfig, "USE_FINETUNED_MODEL", False):
+                try:
+                    self.nlg_engine = NLGEngine(
+                        backend="qwen25_lora",
+                        enable_action_prediction=True,
+                        enable_coherence_check=True
+                    )
+                    print("✓ 增强型NLG引擎初始化完成（后端:qwen25_lora）")
+                except Exception as e:
+                    print(f"⚠️ qwen25_lora后端加载失败: {e}，回退到template")
+                    self.nlg_engine = NLGEngine(
+                        backend="template",
+                        enable_action_prediction=True,
+                        enable_coherence_check=True
+                    )
+            elif ModelConfig.TEXT_GENERATION_MODEL in ["distilgpt2", "distilgpt2-chinese"]:
                 try:
                     self.nlg_engine = NLGEngine(
                         backend="distilgpt2",
@@ -195,6 +225,25 @@ class StoryWeaver:
         start_time = time.time()
         
         try:
+            # 0. 将现实世界动作转换为哈利波特语境的等价动作，降低OOC风险
+            reality_to_hp = {
+                "吃饭": "前往霍格沃茨大厅用餐",
+                "吃午饭": "前往霍格沃茨大厅用餐",
+                "吃晚饭": "前往霍格沃茨大厅用餐",
+                "吃早饭": "前往霍格沃茨大厅用餐",
+                "点外卖": "去大厅找家养小精灵准备餐食",
+                "订餐": "去大厅找家养小精灵准备餐食",
+                "看手机": "翻看魔法书和活点地图",
+                "刷手机": "翻看魔法书和活点地图",
+                "玩手机": "翻看魔法书和活点地图",
+            }
+            for src, dst in reality_to_hp.items():
+                if src in user_input:
+                    mapped = user_input.replace(src, dst)
+                    print(f"[Core] 输入映射: {user_input!r} -> {mapped!r}")
+                    user_input = mapped
+                    break
+
             # 1. NLU - 意图识别
             intent = "move"  # 默认意图
             confidence = 0.8

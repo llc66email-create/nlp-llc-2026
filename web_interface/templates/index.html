@@ -90,15 +90,6 @@
                 </div>
             </div>
 
-            <!-- 历史面板 -->
-            <div id="history-panel" class="history-panel" style="display: none;">
-                <div class="history-header">
-                    <h3>交互历史</h3>
-                    <button onclick="toggleHistory()" class="close-btn">×</button>
-                </div>
-                <div id="history-content" class="history-content"></div>
-            </div>
-
             <!-- 调试信息 -->
             <div id="debug-panel" class="debug-panel" style="display: none;">
                 <div class="debug-header">
@@ -108,6 +99,29 @@
                 <div id="debug-content" class="debug-content"></div>
             </div>
         </main>
+    </div>
+
+    <div id="magic-modal" class="magic-modal" aria-hidden="true">
+        <div class="magic-modal-backdrop" data-modal-close="true"></div>
+        <div class="magic-modal-panel" role="dialog" aria-modal="true" aria-labelledby="magic-modal-title">
+            <div class="magic-modal-header">
+                <div>
+                    <p id="magic-modal-kicker" class="magic-modal-kicker">霍格沃茨档案室</p>
+                    <h3 id="magic-modal-title">魔法提示</h3>
+                </div>
+                <button type="button" id="magic-modal-close" class="close-btn">×</button>
+            </div>
+            <div id="magic-modal-body" class="magic-modal-body"></div>
+            <div id="magic-modal-actions" class="magic-modal-actions"></div>
+        </div>
+    </div>
+
+    <div id="golden-snitch-cursor" class="golden-snitch-cursor" aria-hidden="true">
+        <div class="snitch-aura"></div>
+        <div class="snitch-trail"></div>
+        <div class="snitch-body"></div>
+        <div class="snitch-wing snitch-wing-left"></div>
+        <div class="snitch-wing snitch-wing-right"></div>
     </div>
 
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>

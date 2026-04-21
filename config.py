@@ -3,9 +3,11 @@ Story Weaver 系统配置文件
 """
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 # 项目根目录
 PROJECT_ROOT = Path(__file__).parent.absolute()
+load_dotenv(PROJECT_ROOT / ".env")
 
 # 模型配置
 class ModelConfig:
@@ -15,8 +17,28 @@ class ModelConfig:
     
     # NLG模型配置 - 动态故事推进
     TEXT_GENERATION_MODEL = "uer/gpt2-chinese-cluecorpussmall"  # 有效中文轻量GPT2模型
-    USE_OPENAI_API = True  # ✓ 启用 DeepSeek 外部 API 进行故事生成
+    USE_OPENAI_API = True  # 默认使用 DeepSeek API 后端
     OPENAI_API_MODEL = "deepseek-chat"
+
+    # 本地微调LoRA模型配置
+    USE_FINETUNED_MODEL = False  # 设为True以启用本地微调模型
+    FINETUNED_MODEL_PATH = PROJECT_ROOT / "models" / "qwen2_5_1_5b_lora"  # LoRA适配器路径
+    FINETUNED_BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"  # 基础模型名称（需要网络或本地缓存）
+
+    # 推理速度配置（针对Colab T4 / 无GPU环境优化）
+    # T4实测：Qwen2.5-1.5B float16 约 40-50 tok/s → 60 tokens ≈ 1.5s
+    FAST_MAX_NEW_TOKENS = 60    # 首次响应token上限，控制生成约2秒
+    USE_4BIT_QUANTIZATION = False  # 启用4-bit量化（需bitsandbytes，可省显存但略慢）
+    USE_FLASH_ATTENTION = False    # 启用flash-attention2（需单独安装，可提速20-30%）
+
+    # Colab 远程模型 API 配置
+    # 运行 Colab notebook 第七步后，将打印的 trycloudflare.com 地址填入 .env:
+    #   COLAB_MODEL_URL=https://xxxx.trycloudflare.com
+    # 或直接在此处硬编码（临时调试用）
+    USE_COLAB_REMOTE = False      # 已切回 DeepSeek API，关闭远程 Colab 模型
+    COLAB_MODEL_URL = os.environ.get('COLAB_MODEL_URL', '')  # 优先从环境变量读取
+    COLAB_TIMEOUT_FAST = 3.5      # /generate 接口超时(秒)
+    COLAB_TIMEOUT_SLOW = 30.0     # /two_stage 接口超时(秒)
 
     # NLG配置
     USE_LLM_GENERATION = True  # ✓ 启用动态LLM生成（带约束）
